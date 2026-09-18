@@ -176,7 +176,12 @@ class SubprocessRunner:
         timed_out = False
         try:
             proc = subprocess.run(
-                [self.python, "-I", "-S", str(HARNESS_PATH)],
+                # -I isolates the interpreter (no user site, PYTHON* vars ignored)
+                # but keeps site-packages, which the harness needs in order to
+                # import the seccomp binding and install its own filter. Adding
+                # -S here would harden the interpreter into being unable to
+                # apply the syscall filter that is the whole point of L1.
+                [self.python, "-I", str(HARNESS_PATH)],
                 input=request.payload(),
                 capture_output=True,
                 text=True,
