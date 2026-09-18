@@ -7,7 +7,7 @@ make "turn it all off" a single command that is easy enough to actually run.
 
     afctl preflight   register the providers a new subscription needs
     afctl status      what is running, and what it costs per hour
-    afctl down        deallocate the VM, scale AKS to zero, stop PostgreSQL
+    afctl down        deallocate the VM, stop the AKS cluster and PostgreSQL
     afctl up          bring it back
     afctl cost        actual spend this month, from Cost Management
     afctl deploy      apply the Bicep templates
@@ -179,14 +179,24 @@ def _collect(resource_group: str) -> list[Resource]:
 
     for cluster in az("aks", "list", "-g", resource_group, check=False) or []:
         name = cluster["name"]
+        stopped = cluster.get("powerState", {}).get("code") == "Stopped"
         for pool in cluster.get("agentPoolProfiles", []):
-            count = pool.get("count", 0)
+            # A stopped cluster still reports its configured node count, so
+            # trust the power state over the count when deciding what is
+            # actually billing.
+            count = 0 if stopped else pool.get("count", 0)
             size = pool.get("vmSize", "?")
+            if stopped:
+                state = "cluster stopped"
+            elif count:
+                state = "running"
+            else:
+                state = "scaled to 0"
             resources.append(
                 Resource(
                     "AKS pool",
                     f"{name}/{pool['name']}",
-                    "running" if count else "scaled to 0",
+                    state,
                     f"{count} x {size}",
                     HOURLY_ESTIMATES.get(size, 0.0) * count,
                 )
@@ -260,7 +270,7 @@ def down(
     resource_group: str = typer.Option(DEFAULT_RESOURCE_GROUP, "--resource-group", "-g"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
 ) -> None:
-    """Stop everything billable. Data is preserved."""
+    """Stop everything billable. All data is preserved."""
     if not _rg_exists(resource_group):
         console.print(f"[yellow]Resource group '{resource_group}' does not exist.[/]")
         raise typer.Exit(1)
@@ -275,10 +285,15 @@ def down(
         az("vm", "deallocate", "-g", resource_group, "-n", vm["name"], "--no-wait", check=False)
 
     for cluster in az("aks", "list", "-g", resource_group, check=False) or []:
-        for pool in cluster.get("agentPoolProfiles", []):
-            # Only user pools can reach zero; a system pool needs one node.
-            target = 0 if pool.get("mode") == "User" else 1
-            _set_pool_size(resource_group, cluster["name"], pool, target)
+        # Stop the whole cluster rather than scaling pools to zero. A system
+        # pool cannot go below one node, so pool scaling always leaves a node
+        # billing — roughly $60/month here, which matters against a $100
+        # credit. `aks stop` deallocates every node including the system pool
+        # and keeps the control plane and all cluster state.
+        if cluster.get("powerState", {}).get("code") != "Stopped":
+            console.print(f"  stopping AKS cluster {cluster['name']}")
+            az("aks", "stop", "-g", resource_group, "-n", cluster["name"],
+               "--no-wait", "-o", "none", check=False)
 
     for server in az("postgres", "flexible-server", "list", "-g", resource_group, check=False) or []:
         if server.get("state", "").lower() == "ready":
@@ -315,9 +330,13 @@ def up(
         az("vm", "start", "-g", resource_group, "-n", vm["name"], "--no-wait", check=False)
 
     for cluster in az("aks", "list", "-g", resource_group, check=False) or []:
+        name = cluster["name"]
+        if cluster.get("powerState", {}).get("code") == "Stopped":
+            console.print(f"  starting AKS cluster {name}")
+            az("aks", "start", "-g", resource_group, "-n", name, "-o", "none", check=False)
         for pool in cluster.get("agentPoolProfiles", []):
             target = sandbox_nodes if pool.get("mode") == "User" else 1
-            _set_pool_size(resource_group, cluster["name"], pool, target)
+            _set_pool_size(resource_group, name, pool, target)
 
     console.print("\n[green]Startup requested.[/]")
     console.print(

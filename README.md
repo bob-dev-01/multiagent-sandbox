@@ -129,7 +129,7 @@ because leaving them up over a weekend costs more than the entire planned model 
 
 ```bash
 python -m ops.afctl status    # what is running, and $/hour
-python -m ops.afctl down      # deallocate VM, scale AKS to 0, stop PostgreSQL
+python -m ops.afctl down      # deallocate VM, stop AKS cluster and PostgreSQL
 python -m ops.afctl up        # bring it back
 python -m ops.afctl cost      # actual month-to-date spend
 python -m ops.afctl nuke      # delete everything (asks twice)
@@ -192,8 +192,11 @@ Idle burn is about **$0.27/hour (~$194/month)** against a $100 credit, so the en
 to be switched off between batches:
 
 ```bash
-python -m ops.afctl down    # after every session
+python -m ops.afctl down    # after every session — takes burn to zero
 ```
+
+`down` stops the whole AKS cluster rather than scaling its pools, because a system pool cannot go
+below one node and would keep billing about $60/month on its own.
 
 Three constraints this subscription imposes, all discovered during deployment:
 
