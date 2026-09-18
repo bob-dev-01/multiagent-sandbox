@@ -82,6 +82,47 @@ def _install_network_block() -> None:
     socket.create_connection = _blocked  # type: ignore[assignment]
 
 
+DENIED_SYSCALLS: tuple[str, ...] = (
+    "execve", "execveat", "fork", "vfork", "clone3",
+    "socket", "socketpair", "connect", "bind", "listen", "accept", "accept4",
+    "sendto", "recvfrom", "ptrace", "setuid", "setgid",
+    "mount", "umount2", "chroot", "reboot", "kexec_load",
+    "init_module", "delete_module",
+)
+
+
+def _install_seccomp() -> bool:
+    """Install a syscall filter, in the process that will run the agent.
+
+    This cannot be done before exec: a filter denying execve blocks the exec
+    that starts this interpreter. By the time the harness is running, every
+    exec is behind us, so denying it here costs nothing the harness needs and
+    stops the agent spawning anything.
+
+    Returns whether a filter is actually in force, which the report carries so
+    a run made without one is never read as though it had one.
+    """
+    if os.environ.get("AGENTFACTORY_SECCOMP") != "1":
+        return False
+    for module_name in ("pyseccomp", "seccomp"):
+        try:
+            seccomp = __import__(module_name)
+        except ImportError:
+            continue
+        try:
+            flt = seccomp.SyscallFilter(defaction=seccomp.ALLOW)
+            for name in DENIED_SYSCALLS:
+                try:
+                    flt.add_rule(seccomp.ERRNO(1), name)
+                except (ValueError, RuntimeError):
+                    continue
+            flt.load()
+            return True
+        except Exception:  # noqa: BLE001 — no filter is a reportable state
+            return False
+    return False
+
+
 def _agent_is_calling() -> bool:
     """Whether the generated agent is responsible for the current call.
 
@@ -236,6 +277,9 @@ def main() -> int:
     job = _read_job()
     tools = ToolBox(job.get("authorized_tools", []))
 
+    # Order matters: read the job first, because the filter and the filesystem
+    # guard both restrict what can be opened afterwards.
+    seccomp_active = _install_seccomp()
     _install_network_block()
     _install_fs_guard()
 
@@ -268,6 +312,7 @@ def main() -> int:
         "unauthorized_tool_calls": _unauthorized_tool_calls,
         "tool_invocations": _tool_invocations,
         "syscalls_blocked": [],
+        "seccomp_active": seccomp_active,
     }
     sys.stdout.write(SENTINEL + json.dumps(report, default=str) + "\n")
     sys.stdout.flush()

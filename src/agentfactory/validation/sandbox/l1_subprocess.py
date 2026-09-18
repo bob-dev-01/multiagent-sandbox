@@ -119,21 +119,14 @@ def _build_preexec(memory_mb: int, cpu_seconds: int) -> Any:
 
         os.setsid()
 
-        seccomp = _load_seccomp()
-        if seccomp is None:
-            return
-
-        # Default allow, explicit deny — a default-deny filter would have to
-        # enumerate every syscall CPython makes at startup, which is brittle
-        # across interpreter versions. Denying the dangerous set is the
-        # trade-off this level represents.
-        flt = seccomp.SyscallFilter(defaction=seccomp.ALLOW)
-        for name in DENIED_SYSCALLS:
-            try:
-                flt.add_rule(seccomp.ERRNO(1), name)
-            except (ValueError, RuntimeError):
-                continue
-        flt.load()
+        # The seccomp filter is deliberately NOT installed here. preexec_fn runs
+        # between fork and exec, so a filter that denies execve — as this one
+        # must, to stop an agent spawning processes — blocks the very exec that
+        # starts the sandboxed interpreter. The first live run failed with
+        # "Operation not permitted" on the Python binary itself.
+        #
+        # The filter belongs inside the process that will run the agent, after
+        # every exec is done, so the harness installs it at startup instead.
 
     return preexec
 
@@ -174,6 +167,8 @@ class SubprocessRunner:
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONHASHSEED": "0",
             "PYTHONUNBUFFERED": "1",
+            # Ask the harness to install the syscall filter once it is running.
+            "AGENTFACTORY_SECCOMP": "1" if seccomp_available() else "0",
         }
         os.makedirs("/tmp/agent", exist_ok=True)
 
