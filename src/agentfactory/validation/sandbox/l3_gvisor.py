@@ -35,12 +35,16 @@ from agentfactory.contracts import ExecutionTrace, IsolationLevel
 
 from .base import (
     HARNESS_PATH,
+    SandboxExecutionError,
     SandboxRequest,
     SandboxUnavailableError,
     parse_harness_result,
+    resolve_executable,
 )
 
-DEFAULT_IMAGE = "python:3.12-slim"
+# Pulled from MCR, not Docker Hub: the sandbox subnet's only egress
+# allowance is Microsoft's registry service tags.
+DEFAULT_IMAGE = "mcr.microsoft.com/azurelinux/base/python:3.12"
 DEFAULT_RUNTIME_CLASS = "gvisor"
 DEFAULT_NAMESPACE = "agentfactory-sandbox"
 
@@ -68,7 +72,7 @@ class GvisorPodRunner:
     # -- plumbing ---------------------------------------------------------
 
     def _kubectl(self, *args: str, timeout: int = 120, check: bool = False) -> subprocess.CompletedProcess[str]:
-        cmd = ["kubectl"]
+        cmd = [resolve_executable("kubectl")]
         if self.kubeconfig:
             cmd += ["--kubeconfig", self.kubeconfig]
         cmd += ["-n", self.namespace, *args]
@@ -93,7 +97,7 @@ class GvisorPodRunner:
             raise SandboxUnavailableError("kubectl not found on PATH")
 
         rc = subprocess.run(
-            ["kubectl", *(["--kubeconfig", self.kubeconfig] if self.kubeconfig else []),
+            [resolve_executable("kubectl"), *(["--kubeconfig", self.kubeconfig] if self.kubeconfig else []),
              "get", "runtimeclass", self.runtime_class, "-o", "json"],
             capture_output=True, text=True, timeout=60, check=False,
         )
@@ -197,7 +201,7 @@ class GvisorPodRunner:
 
         # kubectl apply reads the manifest from stdin, so this cannot go
         # through the _kubectl helper.
-        apply_cmd = ["kubectl"]
+        apply_cmd = [resolve_executable("kubectl")]
         if self.kubeconfig:
             apply_cmd += ["--kubeconfig", self.kubeconfig]
         apply_cmd += ["-n", self.namespace, "apply", "-f", "-"]
@@ -205,7 +209,7 @@ class GvisorPodRunner:
             apply_cmd, input=manifest, capture_output=True, text=True, timeout=120, check=False
         )
         if applied.returncode != 0:
-            raise SandboxUnavailableError(f"pod apply failed: {applied.stderr.strip()}")
+            raise SandboxExecutionError(f"pod apply failed: {applied.stderr.strip()}")
 
         try:
             deadline = time.monotonic() + limits.max_duration_sec + 120

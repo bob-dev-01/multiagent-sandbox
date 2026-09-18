@@ -19,20 +19,28 @@ import json
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import time
 import uuid
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from agentfactory.contracts import ExecutionTrace, IsolationLevel
 
 from .base import (
     HARNESS_PATH,
+    SandboxExecutionError,
     SandboxRequest,
     SandboxUnavailableError,
     parse_harness_result,
+    resolve_executable,
 )
 
-DEFAULT_IMAGE = "python:3.12-slim"
+# Pulled from MCR, not Docker Hub: the sandbox subnet's only egress
+# allowance is Microsoft's registry service tags.
+DEFAULT_IMAGE = "mcr.microsoft.com/azurelinux/base/python:3.12"
 WORKDIR = "/workspace"
 
 
@@ -183,20 +191,20 @@ class AciRunner:
         self.location = location
 
     def available(self) -> bool:
-        return shutil.which("az") is not None
+        return shutil.which("az") is not None or shutil.which("az.cmd") is not None
 
-    def run(self, request: SandboxRequest) -> ExecutionTrace:
-        if not self.available():
-            raise SandboxUnavailableError("az CLI not found on PATH")
+    def _container_group_yaml(self, request: SandboxRequest, name: str) -> str:
+        """Container group definition, as YAML.
 
-        limits = request.spec.contract.resource_limits
-        name = f"af-l2-{uuid.uuid4().hex[:12]}"
-        # The harness and the job both travel as base64 blobs inside the
-        # command, so the container needs no volume mount and no custom image
-        # in a registry. The harness reads the job from the file rather than
-        # stdin, because ACI gives no way to write to a started container.
+        The harness travels as a base64 blob, and at roughly 16 KB it does not
+        fit on a command line — Windows caps one at 8191 characters, so passing
+        it as an `--command-line` argument fails with "The command line is too
+        long" before ACI is ever contacted. A YAML file has no such limit.
+        (L3 never hit this because its manifest goes to kubectl on stdin.)
+        """
         import base64
 
+        limits = request.spec.contract.resource_limits
         harness_b64 = base64.b64encode(HARNESS_PATH.read_bytes()).decode()
         job_b64 = base64.b64encode(request.payload().encode("utf-8")).decode()
         bootstrap = (
@@ -204,68 +212,108 @@ class AciRunner:
             f"open('/tmp/h.py','wb').write(base64.b64decode('{harness_b64}'));"
             f"open('/tmp/job.json','wb').write(base64.b64decode('{job_b64}'));"
             "os.makedirs('/tmp/agent',exist_ok=True);"
-            "os.environ['AGENTFACTORY_JOB_FILE']='/tmp/job.json';"
             "os.execve(sys.executable,[sys.executable,'-I','-S','/tmp/h.py'],os.environ)"
         )
 
-        create = [
-            "az", "container", "create",
-            "--resource-group", self.resource_group,
-            "--name", name,
-            "--image", self.image,
-            "--location", self.location,
-            "--cpu", str(max(1, int(limits.cpu_cores))),
-            "--memory", str(max(0.5, limits.memory_mb / 1024)),
-            "--restart-policy", "Never",
-            "--os-type", "Linux",
-            "--command-line", f"python -c \"{bootstrap}\"",
-            "--output", "json",
-        ]
+        group: dict[str, Any] = {
+            "apiVersion": "2021-10-01",
+            "location": self.location,
+            "name": name,
+            "type": "Microsoft.ContainerInstance/containerGroups",
+            "properties": {
+                "osType": "Linux",
+                "restartPolicy": "Never",
+                "containers": [
+                    {
+                        "name": "agent",
+                        "properties": {
+                            "image": self.image,
+                            "command": ["python3", "-c", bootstrap],
+                            "environmentVariables": [
+                                {"name": "AGENTFACTORY_JOB_FILE", "value": "/tmp/job.json"},
+                                {"name": "PYTHONDONTWRITEBYTECODE", "value": "1"},
+                                {"name": "PYTHONHASHSEED", "value": "0"},
+                                {"name": "PYTHONUNBUFFERED", "value": "1"},
+                                {"name": "HOME", "value": "/tmp/agent"},
+                            ],
+                            # Limits from the contract, not a fixed ceiling (OQ-15).
+                            "resources": {
+                                "requests": {
+                                    "cpu": max(1, int(limits.cpu_cores)),
+                                    "memoryInGB": max(0.5, limits.memory_mb / 1024),
+                                }
+                            },
+                        },
+                    }
+                ],
+            },
+        }
         if self.subnet_id:
-            create += ["--subnet", self.subnet_id]
-        else:
-            create += ["--ip-address", "None"]
+            group["properties"]["subnetIds"] = [{"id": self.subnet_id}]
+        return yaml.safe_dump(group, default_flow_style=False)
+
+    def run(self, request: SandboxRequest) -> ExecutionTrace:
+        if not self.available():
+            raise SandboxUnavailableError("az CLI not found on PATH")
+
+        az_exe = resolve_executable("az")
+        limits = request.spec.contract.resource_limits
+        name = f"af-l2-{uuid.uuid4().hex[:12]}"
 
         started = time.perf_counter()
         timed_out = False
         stdout = stderr = ""
         exit_code: int | None = None
 
-        try:
-            subprocess.run(
-                create, capture_output=True, text=True, timeout=300, check=True
-            )
-            deadline = time.monotonic() + limits.max_duration_sec + 120
-            while time.monotonic() < deadline:
-                state = subprocess.run(
-                    ["az", "container", "show", "-g", self.resource_group, "-n", name,
-                     "--query", "containers[0].instanceView.currentState", "-o", "json"],
-                    capture_output=True, text=True, timeout=60, check=False,
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_file = Path(tmp) / "group.yaml"
+            spec_file.write_text(self._container_group_yaml(request, name), encoding="utf-8")
+            try:
+                created = subprocess.run(
+                    [az_exe, "container", "create", "-g", self.resource_group,
+                     "--file", str(spec_file), "-o", "none"],
+                    capture_output=True, text=True, timeout=600, check=False,
                 )
-                try:
-                    current = json.loads(state.stdout or "{}")
-                except json.JSONDecodeError:
-                    current = {}
-                if current.get("state") == "Terminated":
-                    exit_code = current.get("exitCode")
-                    break
-                time.sleep(2)
-            else:
-                timed_out = True
+                if created.returncode != 0:
+                    raise SandboxExecutionError(
+                        f"ACI create failed: {created.stderr.strip()[:500]}"
+                    )
 
-            logs = subprocess.run(
-                ["az", "container", "logs", "-g", self.resource_group, "-n", name],
-                capture_output=True, text=True, timeout=120, check=False,
-            )
-            stdout, stderr = logs.stdout, logs.stderr
-        except subprocess.CalledProcessError as exc:
-            raise SandboxUnavailableError(f"ACI create failed: {exc.stderr}") from exc
-        finally:
-            elapsed_ms = (time.perf_counter() - started) * 1000
-            subprocess.run(
-                ["az", "container", "delete", "-g", self.resource_group, "-n", name, "--yes"],
-                capture_output=True, text=True, timeout=180, check=False,
-            )
+                deadline = time.monotonic() + limits.max_duration_sec + 120
+                while time.monotonic() < deadline:
+                    state = subprocess.run(
+                        [az_exe, "container", "show", "-g", self.resource_group, "-n", name,
+                         "-o", "json"],
+                        capture_output=True, text=True, timeout=60, check=False,
+                    )
+                    try:
+                        payload = json.loads(state.stdout or "{}")
+                        current = (
+                            (payload.get("containers") or [{}])[0]
+                            .get("instanceView", {})
+                            .get("currentState", {})
+                        )
+                    except (json.JSONDecodeError, IndexError, AttributeError):
+                        current = {}
+                    if current.get("state") == "Terminated":
+                        exit_code = current.get("exitCode")
+                        break
+                    time.sleep(2)
+                else:
+                    timed_out = True
+
+                logs = subprocess.run(
+                    [az_exe, "container", "logs", "-g", self.resource_group, "-n", name],
+                    capture_output=True, text=True, timeout=120, check=False,
+                )
+                stdout, stderr = logs.stdout, logs.stderr
+            finally:
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                subprocess.run(
+                    [az_exe, "container", "delete", "-g", self.resource_group,
+                     "-n", name, "--yes", "-o", "none"],
+                    capture_output=True, text=True, timeout=180, check=False,
+                )
 
         return parse_harness_result(
             stdout,

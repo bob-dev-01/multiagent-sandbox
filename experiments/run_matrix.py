@@ -49,7 +49,10 @@ from agentfactory.telemetry.events import EventLog, EventType  # noqa: E402
 from agentfactory.validation.aggregator import StrictnessProfile  # noqa: E402
 from agentfactory.validation.layer2_policy import EnterprisePolicy  # noqa: E402
 from agentfactory.validation.pipeline import PipelineConfig, ValidationPipeline  # noqa: E402
-from agentfactory.validation.sandbox.base import SandboxUnavailableError  # noqa: E402
+from agentfactory.validation.sandbox.base import (  # noqa: E402
+    SandboxExecutionError,
+    SandboxUnavailableError,
+)
 
 
 @dataclass(frozen=True)
@@ -149,6 +152,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=0, help="Stop after N cells (smoke test).")
     parser.add_argument("--resume", action="store_true", help="Skip cells already in the log.")
     parser.add_argument("--no-bandit", action="store_true")
+    parser.add_argument(
+        "--test-inputs", type=int, default=3,
+        help=(
+            "Synthetic inputs each agent is run against in the sandbox. Every input is a "
+            "separate container or pod, so this multiplies wall-clock time directly — "
+            "use 1 for a timing pilot, more for the real batch."
+        ),
+    )
     parser.add_argument("--require-seccomp", action="store_true",
                         help="Refuse to run L1 without an active syscall filter.")
     parser.add_argument("--aci-resource-group", default=None)
@@ -244,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
                     profile=profile,
                     policy=policy,
                     use_bandit=not args.no_bandit,
-                    test_inputs=({"case": 1}, {"case": 2}, {"case": 3}),
+                    test_inputs=tuple({"case": n} for n in range(1, args.test_inputs + 1)),
                 ),
                 event_log=log,
             )
@@ -252,6 +263,16 @@ def main(argv: list[str] | None = None) -> int:
             started = time.perf_counter()
             try:
                 result = pipeline.validate(spec, expected_output=task.expected_output)
+            except SandboxExecutionError as exc:
+                # The agent never ran, so no verdict is recorded. The cell stays
+                # incomplete and --resume will retry it.
+                failures += 1
+                print(f"  [{index}/{len(pending)}] {cell.key} SANDBOX FAILED: {exc}")
+                log.emit(EventType.RUN_FAILED,
+                         task_id=cell.task_id, agent_id=spec.agent_id,
+                         isolation_level=level,
+                         detail={"cell_key": cell.key, "stage": "sandbox", "error": str(exc)})
+                continue
             except Exception as exc:  # noqa: BLE001 — a failed cell is data
                 failures += 1
                 print(f"  [{index}/{len(pending)}] {cell.key} FAILED: {exc}")

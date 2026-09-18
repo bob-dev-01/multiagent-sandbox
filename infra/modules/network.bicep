@@ -6,8 +6,9 @@
 //
 //   orchestrator subnet — may reach the Anthropic API, Blob Storage and GitHub.
 //                         Holds the credentials. Never runs generated code.
-//   sandbox subnet      — DENY ALL egress. No exceptions, including Anthropic.
-//                         Runs generated code. Holds no credentials.
+//   sandbox subnet      — deny all egress except a container-registry pull.
+//                         Runs generated code. Holds no credentials. The one
+//                         exception is forced and is documented at the rule.
 //
 // The sandbox subnet is delegated to Azure Container Instances, which is what
 // makes the NSG apply to container groups at all: an ACI group deployed with a
@@ -76,6 +77,26 @@ resource orchestratorNsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = 
         }
       }
       {
+        // OS package repositories. Ubuntu archives answer on port 80, so a
+        // 443-only allowlist silently leaves the VM unable to install anything
+        // — and, more seriously, unable to receive the automatic security
+        // patches the VM is configured to take. This is the orchestrator
+        // subnet: it holds credentials but never runs generated code, so HTTP
+        // egress here does not touch the sandbox containment story.
+        name: 'AllowPackageRepositoriesOutbound'
+        properties: {
+          priority: 135
+          direction: 'Outbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'VirtualNetwork'
+          sourcePortRange: '*'
+          destinationAddressPrefix: 'Internet'
+          destinationPortRange: '80'
+          description: 'apt and OS patching. Orchestrator subnet only.'
+        }
+      }
+      {
         name: 'AllowSqlOutbound'
         properties: {
           priority: 130
@@ -113,11 +134,64 @@ resource sandboxNsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
   properties: {
     securityRules: [
       {
-        // The whole point of this subnet. If a rule is ever added above this
-        // one, the isolation claim in the thesis stops being true.
-        name: 'DenyAllOutbound'
+        // Container image pull. This is a concession, and it is worth being
+        // precise about what it costs.
+        //
+        // A VNet-injected ACI container group pulls its image *through this
+        // subnet*, so a literal deny-all rule means the container never starts
+        // — verified: ACI fails with RegistryErrorResponse from index.docker.io.
+        // The NSG cannot tell "the platform is fetching an image" from "the
+        // agent is calling out", because both are the same subnet egressing.
+        //
+        // So the allowance is made as narrow as it can be: 443 to Microsoft's
+        // container registry service tags only, never the open internet and
+        // never Docker Hub. What a compromised agent gains is the ability to
+        // reach an anonymous, read-only Microsoft registry. That is a real
+        // residual channel (DNS and timing at minimum) rather than none, and
+        // it is recorded as such in architecture.md rather than glossed over.
+        //
+        // The clean fix is a private Azure Container Registry endpoint, which
+        // keeps the pull entirely inside the VNet and needs no egress at all.
+        // It requires ACR Premium, which is a fifth of this study's monthly
+        // credit — so it is the documented production answer, not the one
+        // deployed here.
+        // One tag per rule: Azure accepts a service tag only in the singular
+        // destinationAddressPrefix and rejects the plural array outright.
+        name: 'AllowMcrPull'
         properties: {
           priority: 100
+          direction: 'Outbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'VirtualNetwork'
+          sourcePortRange: '*'
+          destinationAddressPrefix: 'MicrosoftContainerRegistry'
+          destinationPortRange: '443'
+          description: 'Image pull only. Not a general egress allowance.'
+        }
+      }
+      {
+        // MCR serves layers through Front Door, so the registry tag alone is
+        // not enough to complete a pull.
+        name: 'AllowFrontDoorPull'
+        properties: {
+          priority: 110
+          direction: 'Outbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'VirtualNetwork'
+          sourcePortRange: '*'
+          destinationAddressPrefix: 'AzureFrontDoor.FirstParty'
+          destinationPortRange: '443'
+          description: 'Image layer delivery for MCR.'
+        }
+      }
+      {
+        // Everything else. If a rule is ever added above this one for any
+        // reason other than image pull, the isolation claim stops being true.
+        name: 'DenyAllOtherOutbound'
+        properties: {
+          priority: 4096
           direction: 'Outbound'
           access: 'Deny'
           protocol: '*'
@@ -125,7 +199,7 @@ resource sandboxNsg 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
           sourcePortRange: '*'
           destinationAddressPrefix: '*'
           destinationPortRange: '*'
-          description: 'Sandboxed agents have no network. No exceptions.'
+          description: 'Sandboxed agents have no other network access.'
         }
       }
       {

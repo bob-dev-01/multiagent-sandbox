@@ -265,3 +265,51 @@ def test_undeclared_tool_call_is_recorded(safe_contract: AgentContract, local_ru
     sandbox = result.report_for(ValidationLayer.SANDBOX)
     assert sandbox is not None and sandbox.trace is not None
     assert sandbox.trace.unauthorized_tool_calls
+
+
+# ------------------------------------------- infrastructure vs agent failure
+
+
+def test_runner_failure_is_not_a_verdict(safe_contract: AgentContract) -> None:
+    """An agent that never ran must not be reported as functionally incorrect.
+
+    Found on the first live pilot: the ACI runner could not resolve the `az`
+    executable on Windows, the pipeline caught the error and synthesised an
+    empty trace, and every affected agent came back FAIL_INCORRECT with
+    output_match_score 0.0. Sixty runs of infrastructure failure looked like
+    sixty scientific results, and nothing in the metrics would have shown it.
+    """
+    from agentfactory.contracts import IsolationLevel
+    from agentfactory.validation.sandbox.base import SandboxExecutionError
+
+    class BrokenRunner:
+        level = IsolationLevel.L2
+
+        def available(self) -> bool:
+            return True
+
+        def run(self, request):  # noqa: ANN001, ANN201
+            raise FileNotFoundError("[WinError 2] The system cannot find the file specified")
+
+    spec = make_spec(SAFE_AGENT, safe_contract)
+    pipeline = ValidationPipeline(
+        BrokenRunner(),
+        PipelineConfig.default(use_bandit=False, test_inputs=({"case": 1},)),
+    )
+    with pytest.raises(SandboxExecutionError, match="runner failed"):
+        pipeline.validate(spec)
+
+
+def test_agent_crash_is_still_a_verdict(safe_contract: AgentContract, local_runner) -> None:
+    """The other side of the same rule: a crashing agent is a real result."""
+    source = "def run(task_input, tools):\n    raise RuntimeError('agent blew up')\n"
+    spec = make_spec(source, safe_contract)
+    pipeline = ValidationPipeline(
+        local_runner,
+        PipelineConfig.default(use_bandit=False, test_inputs=({"case": 1},)),
+    )
+    result = pipeline.validate(spec, expected_output={"total": 1})
+    # It ran, it failed on its own terms, and that is a correctness finding.
+    assert result.verdict is Verdict.FAIL_INCORRECT
+    sandbox = result.report_for(ValidationLayer.SANDBOX)
+    assert sandbox is not None and sandbox.trace is not None

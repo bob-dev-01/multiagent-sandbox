@@ -13,6 +13,7 @@ substrate understands — rlimits, container resources, pod limits.
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -25,6 +26,31 @@ HARNESS_PATH = Path(__file__).resolve().parent / "harness.py"
 # The harness prefixes its JSON report with this so that anything the agent
 # itself printed cannot be mistaken for the report.
 HARNESS_SENTINEL = "__AGENTFACTORY_RESULT__"
+
+
+def resolve_executable(name: str) -> str:
+    """Absolute path to a CLI, or raise.
+
+    On Windows `az` is a .cmd shim that subprocess cannot launch by bare name;
+    it fails with WinError 2, which reads like a missing file rather than a
+    resolution problem. `kubectl` is a real .exe and works either way, which is
+    how L2 could be broken while L3 looked fine.
+    """
+    found = shutil.which(name) or shutil.which(f"{name}.cmd") or shutil.which(f"{name}.exe")
+    if not found:
+        raise SandboxUnavailableError(f"{name} not found on PATH")
+    return found
+
+
+class SandboxExecutionError(RuntimeError):
+    """The sandbox could not run the agent.
+
+    Deliberately distinct from a badly behaved agent. An agent that crashes,
+    times out or returns nonsense produces a valid ExecutionTrace and a real
+    verdict. A container that never started produces neither — and must never
+    be recorded as though the agent had run and failed, because that turns an
+    infrastructure outage into evidence about the agent.
+    """
 
 
 class SandboxUnavailableError(RuntimeError):

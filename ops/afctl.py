@@ -333,7 +333,10 @@ def up(
         name = cluster["name"]
         if cluster.get("powerState", {}).get("code") == "Stopped":
             console.print(f"  starting AKS cluster {name}")
-            az("aks", "start", "-g", resource_group, "-n", name, "-o", "none", check=False)
+            # Cluster start routinely exceeds the default client timeout;
+            # fire and forget, then let the caller poll.
+            az("aks", "start", "-g", resource_group, "-n", name,
+               "--no-wait", "-o", "none", check=False)
         for pool in cluster.get("agentPoolProfiles", []):
             target = sandbox_nodes if pool.get("mode") == "User" else 1
             _set_pool_size(resource_group, name, pool, target)

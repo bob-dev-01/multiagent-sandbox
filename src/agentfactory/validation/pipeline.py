@@ -31,7 +31,12 @@ from agentfactory.telemetry.events import EventLog, EventType
 from .aggregator import StrictnessProfile, aggregate
 from .layer1_static import analyse
 from .layer2_policy import EnterprisePolicy, check
-from .sandbox.base import SandboxRequest, SandboxRunner, SandboxUnavailableError
+from .sandbox.base import (
+    SandboxExecutionError,
+    SandboxRequest,
+    SandboxRunner,
+    SandboxUnavailableError,
+)
 
 
 @dataclass
@@ -103,18 +108,21 @@ class ValidationPipeline:
             )
             try:
                 traces.append(self.runner.run(request))
-            except SandboxUnavailableError:
+            except (SandboxUnavailableError, SandboxExecutionError):
+                # The agent never ran. Let this reach the caller so the cell is
+                # recorded as a failed run and retried, rather than becoming a
+                # verdict about the agent.
                 raise
-            except Exception as exc:  # noqa: BLE001 — a crashed run is a result
-                from agentfactory.contracts import ExecutionTrace
-
-                traces.append(
-                    ExecutionTrace(
-                        isolation_level=self.level,
-                        exit_code=None,
-                        stderr_tail=f"runner error: {type(exc).__name__}: {exc}",
-                    )
-                )
+            except Exception as exc:  # noqa: BLE001
+                # An unexpected error is indistinguishable from an
+                # infrastructure one from here, so it is treated as such. The
+                # tempting alternative — synthesising an empty trace — silently
+                # turns "we could not run this" into "this produced no correct
+                # output", which reads as a FAIL_INCORRECT verdict and inflates
+                # the false-positive rate with runs that never happened.
+                raise SandboxExecutionError(
+                    f"{self.level.value} runner failed: {type(exc).__name__}: {exc}"
+                ) from exc
 
         # Worst trace: any safety violation dominates; then lowest output match.
         worst = min(
