@@ -3,7 +3,8 @@
 **System:** Sandbox-First Agent Factory with an Automated Validation Pipeline for LLM-Generated Micro-Agents
 **Author:** Bobur Yusupov — IT Park University (`bobur_yusupov@itpu.uz`)
 **Specialization:** Solution Architecture and Data Engineering
-**Document status:** **Draft for review** — not yet implemented; no measured results are reported here
+**Document status:** **Draft for review** — implemented and deployed; a pilot run has measured
+the latency figures in OQ-4. Everything else remains a design target.
 **Derived from:** `docs/TASK 1`–`docs/Task7` (research programme Tasks 1–7)
 
 ---
@@ -16,7 +17,7 @@ This document specifies the **software architecture** of the Agent Factory syste
 
 **Out of scope:** statistical analysis plans, interview protocols, ethics procedures, and publication strategy. These live in the source task documents and are referenced only where they constrain the architecture.
 
-**Reading note on numbers.** Every quantitative figure in this document is a **design target or budget**, not a measurement. Nothing in this architecture has been built or benchmarked yet. Section 16 flags where the source documents blur this distinction.
+**Reading note on numbers.** Unless a figure is explicitly marked as measured, every quantitative value here is a **design target or budget**. The exception is OQ-4, which now carries real measurements from a pilot run against the deployed environment — and they overturn one of the design's assumptions. Section 16 also flags where the source documents blur the target/result distinction.
 
 ---
 
@@ -606,11 +607,41 @@ Three separate problems:
 
 §4.2 states the Orchestrator is hosted on `Standard_B2s`; §4.4.0 and the budget table state `Standard_D4s_v3` (4 vCPU, 16 GB). `B2s` is a burstable 2 vCPU / 4 GB instance — a materially different machine, and burstable CPU credits would add variance to exactly the latency measurements the study depends on. This document assumes `D4s_v3` with `B2s` as a credit-conservation fallback. **Confirm.**
 
-### OQ-4 — L2 latency estimate looks optimistic — Medium
+### OQ-4 — **ANSWERED by measurement.** L2 is 15× over budget, and the ordering inverts — High
 
-The design budgets ACI cold start at **800 ms – 2.5 s** and sets an L2 p50 budget of < 3 s. ACI container-group provisioning is commonly reported as substantially slower than this, and varies with regional load. If ACI cold start dominates, the L2 budget is unreachable and ADR-7 (ephemeral, no warm pool) needs revisiting.
+This was open; a pilot run against the live environment closed it.
 
-**This should be the first thing measured in the pilot**, because it determines whether the L1/L2/L3 latency spectrum is separable in practice at all.
+| Level | Mechanism | p50 measured | Budget |
+|---|---|---|---|
+| L1 | subprocess + seccomp-bpf | 58 ms | < 300 ms ✅ |
+| L3 | AKS pod, gVisor RuntimeClass | 7.5 s | < 8 s ✅ |
+| L2 | ephemeral ACI container group | **43.5 s** | < 3 s ❌ |
+
+Task 7 estimated ACI cold start at 800 ms – 2.5 s. The measured figure is 43.5 s at p50 with a
+p95 of 45.8 s — extremely consistent, so this is a property of the platform rather than noise.
+
+The more important result is the shape rather than the magnitude: **L1 ≪ L3 ≪ L2**. The strongest
+isolation level is about six times faster than the middle one.
+
+That inverts the assumption RQ2 rests on. The Security-Latency Score treats isolation strength and
+latency as trading against each other monotonically; the data says latency is governed by the
+**provisioning model**, not the isolation mechanism. An AKS node is already warm, so an L3 pod is
+merely scheduled. An ACI container group is constructed from nothing for every validation, and that
+construction is essentially the entire 43.5 s.
+
+As it stands the design varies two things at once — three isolation mechanisms and two provisioning
+models — and the provisioning model dominates. Any RQ2 answer computed from these conditions would
+be measuring Azure's container-group provisioning latency while appearing to measure gVisor.
+
+**Proposed resolution, requiring a researcher decision:** run L2 as a standard runc pod on the same
+AKS cluster, so L2 and L3 differ only in `runtimeClassName`. The isolation mechanism then becomes
+the sole varying factor and the comparison means what RQ2 says it means. ACI would remain
+interesting as a separate, honestly-labelled *provisioning* condition rather than as an isolation
+level. This has not been changed unilaterally because it alters the experimental design.
+
+Secondary: at L1, wall-clock is 39 ms while the agent itself runs 1.2 ms. Process startup dominates
+even at the fastest level, so `ExecutionTrace` now records provisioning and agent runtime
+separately — and the contract's duration limit is checked against the latter (see OQ-15).
 
 ### OQ-5 — Security-Latency Score is unit-dependent and has a singularity — Medium
 

@@ -6,9 +6,10 @@ is **safe to deploy** and **correct enough to be useful** before it executes.
 
 Master's research, Solution Architecture and Data Engineering — Bobur Yusupov, IT Park University.
 
-> **Status: deployed, no experiment run yet.** The environment is live in Azure and L3 gVisor
-> isolation is verified working. No validation batch has been executed, so every number in the
-> docs is still a design target rather than a measurement.
+> **Status: deployed, pilot run complete.** All three isolation levels have been exercised
+> end to end against the live environment. The full 2,700-run experiment has not been executed
+> and the corpus is still 3 tasks of 30, so nothing here is a thesis result — but the latency
+> figures below are measurements, not targets.
 
 ---
 
@@ -178,6 +179,59 @@ result the original definition could not express.
 generation happens during a matrix run and there is no generation stochasticity for replicates to
 absorb. Layers 1 and 2 are deterministic, so replicating them is pseudo-replication that would
 understate standard errors.
+
+---
+
+## Pilot results
+
+One replicate, one test input, 30 labelled agents per level, run against the live environment.
+
+### Classification
+
+| | L1 | L2 | L3 |
+|---|---|---|---|
+| FNR | 0.000 | 0.000 | 0.000 |
+| FPR | 0.000 | 0.000 | 0.000 |
+| Accuracy | 1.000 | 1.000 | 1.000 |
+
+Read this as "the filter catches what we planted", not "the filter is robust". The corpus contains
+researcher-injected violations of known patterns, which is exactly the optimistic bias recorded as
+OQ-9. A perfect score against a corpus you wrote yourself is a smoke test passing, not a result.
+
+### Latency, and the finding that matters
+
+| Level | Mechanism | p50 | p95 | Budget |
+|---|---|---|---|---|
+| **L1** | subprocess + seccomp-bpf | **58 ms** | 64 ms | < 300 ms ✅ |
+| **L3** | AKS pod, gVisor RuntimeClass | **7.5 s** | 9.6 s | < 8 s ✅ |
+| **L2** | ephemeral ACI container group | **43.5 s** | 45.8 s | < 3 s ❌ **15× over** |
+
+**The ordering is not monotonic: L1 ≪ L3 ≪ L2.** The strongest isolation level is roughly six
+times *faster* than the middle one.
+
+This contradicts the premise the design was built on. RQ2 asks how isolation strength trades off
+against latency, and the Security-Latency Score assumes the trade is monotonic — more isolation,
+more milliseconds. The measurement says latency is dominated by the *provisioning model*, not by
+the isolation mechanism. An AKS node is already running, so an L3 pod only has to be scheduled. An
+ACI container group is built from nothing on every single validation, and that provisioning is
+essentially all of the 43.5 seconds.
+
+So the honest reading is that the current design compares three isolation mechanisms *and* two
+provisioning models at once, and the provisioning model wins. The fix is an experimental-design
+change rather than a code change: run L2 as a standard runc pod on the same AKS cluster, so L2 and
+L3 differ only in `runtimeClassName`. Then the latency difference measures gVisor, which is what
+RQ2 is actually asking about. That decision belongs to the researcher, so it has not been made
+unilaterally.
+
+Secondary observation: at L1, wall time is 39 ms while the agent itself runs for 1.2 ms. Even at
+the fastest level, almost all of the measured latency is process startup. `ExecutionTrace` now
+records both numbers separately.
+
+### seccomp
+
+Verified at the kernel level rather than assumed: with the filter installed, `socket()` returns
+`EPERM` from the kernel, not from the harness's own monkeypatch. All 21 L1 sandbox runs report
+`seccomp_active: true`.
 
 ---
 
