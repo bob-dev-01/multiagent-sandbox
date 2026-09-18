@@ -62,14 +62,27 @@ DENIED_SYSCALLS: tuple[str, ...] = (
 )
 
 
+def _load_seccomp() -> Any:
+    """Return a libseccomp binding, or None.
+
+    Two packages expose the same API under different module names: `pyseccomp`
+    (a pure-Python cffi binding, pip-installable) and `seccomp` (libseccomp's
+    own bindings, usually distro-packaged). Checking only one of them reports
+    seccomp as unavailable on a machine where it is installed — which would
+    silently downgrade L1 to rlimits-only while still labelling the runs L1.
+    """
+    for module_name in ("pyseccomp", "seccomp"):
+        try:
+            return __import__(module_name)
+        except ImportError:
+            continue
+    return None
+
+
 def seccomp_available() -> bool:
     if platform.system() != "Linux":
         return False
-    try:
-        import seccomp  # type: ignore[import-not-found]  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    return _load_seccomp() is not None
 
 
 def _build_preexec(memory_mb: int, cpu_seconds: int) -> Any:
@@ -106,9 +119,8 @@ def _build_preexec(memory_mb: int, cpu_seconds: int) -> Any:
 
         os.setsid()
 
-        try:
-            import seccomp  # type: ignore[import-not-found]
-        except ImportError:
+        seccomp = _load_seccomp()
+        if seccomp is None:
             return
 
         # Default allow, explicit deny — a default-deny filter would have to
