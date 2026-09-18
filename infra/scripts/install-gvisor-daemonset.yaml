@@ -1,0 +1,168 @@
+# Installs gVisor (runsc) onto the AKS sandbox node pool and registers it as a
+# containerd runtime handler, then exposes it as a RuntimeClass.
+#
+# Read this before applying it. AKS does not ship gVisor; Azure's supported
+# sandboxing path is Kata (Pod Sandboxing). What follows is node customization
+# on a managed control plane:
+#
+#   * The DaemonSet is privileged and writes to the node's containerd config.
+#   * A node-image upgrade replaces the node and reverts the change, which is
+#     why the cluster's autoUpgradeProfile is set to 'none' in aks.bicep.
+#   * If AKS changes its containerd config layout, the patch below stops
+#     matching and the RuntimeClass silently stops resolving.
+#
+# The L3 runner calls preflight() before every batch precisely because of that
+# last point: a RuntimeClass that no longer resolves must fail loudly, never
+# fall back to runc while still being recorded as L3.
+#
+# Fallback if this proves unstable: use runtimeClassName
+# 'kata-mshv-vm-isolation' with AKS Pod Sandboxing enabled. That is supported
+# natively, but it is Kata rather than gVisor and belongs in the thesis
+# delimitations rather than in a quiet config change.
+#
+# Apply:
+#   kubectl apply -f infra/scripts/install-gvisor-daemonset.yaml
+#   kubectl -n kube-system rollout status ds/gvisor-installer
+#   kubectl get runtimeclass gvisor
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentfactory-sandbox
+  labels:
+    agentfactory.io/purpose: untrusted-code-execution
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+---
+# Pods in the sandbox namespace get no network at all. This is the Kubernetes
+# half of the containment described in architecture.md section 10 — the NSG
+# covers the subnet, this covers pod-to-pod and pod-to-anything traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: agentfactory-sandbox
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress and no egress rules means everything is denied, including DNS.
+  # A sandboxed agent has no reason to resolve a name.
+
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+scheduling:
+  nodeSelector:
+    agentfactory.io/sandbox: gvisor
+  tolerations:
+    - key: agentfactory.io/sandbox
+      operator: Equal
+      value: gvisor
+      effect: NoSchedule
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gvisor-installer
+  namespace: kube-system
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gvisor-installer
+  namespace: kube-system
+  labels:
+    app: gvisor-installer
+spec:
+  selector:
+    matchLabels:
+      app: gvisor-installer
+  template:
+    metadata:
+      labels:
+        app: gvisor-installer
+    spec:
+      serviceAccountName: gvisor-installer
+      hostPID: true
+      # Only the sandbox pool. The system pool must stay stock.
+      nodeSelector:
+        agentfactory.io/sandbox: gvisor
+      tolerations:
+        - key: agentfactory.io/sandbox
+          operator: Equal
+          value: gvisor
+          effect: NoSchedule
+      initContainers:
+        - name: install-runsc
+          image: mcr.microsoft.com/cbl-mariner/base/core:2.0
+          securityContext:
+            privileged: true
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              HOST_BIN=/host/usr/local/bin
+              CONTAINERD_CONF=/host/etc/containerd/config.toml
+
+              if [ -x "${HOST_BIN}/runsc" ]; then
+                echo "runsc already installed; verifying containerd config"
+              else
+                echo "downloading runsc"
+                ARCH=$(uname -m)
+                URL="https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}"
+                for f in runsc containerd-shim-runsc-v1; do
+                  curl -fsSL "${URL}/${f}" -o "/tmp/${f}"
+                  curl -fsSL "${URL}/${f}.sha512" -o "/tmp/${f}.sha512"
+                  ( cd /tmp && sha512sum -c "${f}.sha512" )
+                  install -m 0755 "/tmp/${f}" "${HOST_BIN}/${f}"
+                done
+              fi
+
+              # Register the runsc handler if it is not already there. The
+              # grep guard keeps this idempotent across DaemonSet restarts.
+              if ! grep -q 'containerd.runtimes.runsc' "${CONTAINERD_CONF}"; then
+                echo "registering runsc runtime handler"
+                cat >> "${CONTAINERD_CONF}" <<'TOML'
+
+              [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
+                runtime_type = "io.containerd.runsc.v1"
+              TOML
+                echo "restarting containerd"
+                chroot /host systemctl restart containerd
+              else
+                echo "runsc handler already registered"
+              fi
+
+              # Prove the handler actually resolves rather than assuming it.
+              chroot /host /usr/local/bin/runsc --version
+          volumeMounts:
+            - name: host
+              mountPath: /host
+      containers:
+        # The DaemonSet has to keep a pod alive to stay scheduled, but there is
+        # nothing left to do after the init container, so this just sleeps.
+        - name: pause
+          image: mcr.microsoft.com/oss/kubernetes/pause:3.9
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+      volumes:
+        - name: host
+          hostPath:
+            path: /
+            type: Directory

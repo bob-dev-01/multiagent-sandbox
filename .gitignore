@@ -1,0 +1,42 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.venv-linux/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# data / runs
+runs/
+logs/
+*.jsonl
+!corpus/**/*.jsonl
+.embeddings_cache/
+docs/
+
+# R
+.Rhistory
+.RData
+analysis/renv/library/
+
+# azure / terraform-ish
+*.bicepparam.local
+.azure/
+
+# os / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

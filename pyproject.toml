@@ -1,0 +1,114 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentfactory"
+version = "0.1.0"
+description = "Sandbox-first Agent Factory: automated validation pipeline for LLM-generated micro-agents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Bobur Yusupov", email = "bobur_yusupov@itpu.uz" }]
+
+dependencies = [
+    # Core
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6,<3",
+    "PyYAML>=6.0,<7",
+    "typer>=0.15,<0.20",
+    "rich>=13.9,<15",
+    "python-dotenv>=1.0,<2",
+
+    # Anthropic — generator (Sonnet 5) and judge (Opus 5)
+    "anthropic>=0.40",
+
+    # Registry
+    "psycopg[binary]>=3.2,<4",
+    "pgvector>=0.3,<0.5",
+
+    # Static analysis (validation Layer 1)
+    "bandit>=1.7,<2",
+
+    # Sandbox runners
+    "docker>=7.1,<8",
+
+    # Observability
+    "opentelemetry-sdk>=1.28",
+    "opentelemetry-api>=1.28",
+
+    # Metrics pipeline
+    "pandas>=2.2,<3",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+embeddings = [
+    # Local, offline, reproducible embeddings for the reuse decision.
+    "sentence-transformers>=3.3,<6",
+]
+azure = [
+    "azure-identity>=1.19",
+    "azure-keyvault-secrets>=4.9",
+    "azure-storage-blob>=12.24",
+    "azure-mgmt-compute>=33.0",
+    "azure-mgmt-containerservice>=34.0",
+    "azure-mgmt-containerinstance>=10.1",
+    "azure-mgmt-rdbms>=10.1",
+    "azure-mgmt-resource>=23.1",
+    "azure-mgmt-costmanagement>=4.0",
+    "azure-monitor-opentelemetry>=1.6",
+]
+orchestration = [
+    "autogen-agentchat>=0.4",
+    "autogen-core>=0.4",
+    "autogen-ext[anthropic]>=0.4",
+]
+dashboard = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-PyYAML",
+]
+
+[project.scripts]
+afctl = "ops.afctl:app"
+agentfactory = "agentfactory.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentfactory", "ops"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-q --strict-markers"
+markers = [
+    "integration: requires external services (Azure, Docker, Postgres, Anthropic API)",
+    "slow: long-running",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "ops", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer expresses CLI options as argument defaults; B008 is its idiom, not a bug.
+"ops/afctl.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["agentfactory"]
+mypy_path = "src"
+strict_optional = true
+warn_unused_ignores = true
+ignore_missing_imports = true

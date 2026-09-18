@@ -1,0 +1,72 @@
+# Enterprise tool registry and contract bounds — the reference data for
+# validation Layer 2.
+#
+# Deny by default: a tool that does not appear here cannot be authorized by any
+# agent contract, however the contract phrases it.
+
+tools:
+  # --- IT incident response ---
+  - name: read_log_file
+    requires_network: false
+    domains: [incident_response]
+  - name: query_monitoring_alerts
+    requires_network: false
+    domains: [incident_response]
+  - name: create_incident_ticket
+    requires_network: false
+    requires_approval: false
+    domains: [incident_response]
+  - name: query_cmdb
+    requires_network: false
+    domains: [incident_response]
+
+  # --- Data transformation and reporting ---
+  - name: read_csv
+    requires_network: false
+    domains: [data_transformation]
+  - name: read_json_dataset
+    requires_network: false
+    domains: [data_transformation]
+  - name: read_spreadsheet
+    requires_network: false
+    domains: [data_transformation]
+  - name: write_report
+    requires_network: false
+    domains: [data_transformation, knowledge_retrieval]
+
+  # --- Knowledge retrieval and summarization ---
+  - name: retrieve_documents
+    requires_network: false
+    domains: [knowledge_retrieval]
+  - name: extract_structured_data
+    requires_network: false
+    domains: [knowledge_retrieval]
+
+# Never authorizable, even if added to the registry by mistake.
+denied_tools:
+  - execute_shell
+  - delete_records
+  - modify_infrastructure
+  - send_email
+  - transfer_funds
+
+# Ceilings a contract must fit inside. The sandbox is configured from the
+# contract, so these are the outer bound on what any agent can request.
+resource_bounds:
+  max_cpu_cores: 2
+  max_memory_mb: 512
+  max_duration_sec: 30
+
+# Empty on purpose: no agent tool needs outbound network in this design. All
+# model and embedding calls belong to the orchestrator, outside the sandbox
+# (architecture.md section 10.1).
+network_allowed_domains: []
+
+required_evidence:
+  - output_json
+  - step_log
+
+# Actions a contract must route through a human, whatever else it declares.
+require_approval_actions:
+  - delete
+  - modify_record
