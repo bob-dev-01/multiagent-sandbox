@@ -6,8 +6,9 @@ is **safe to deploy** and **correct enough to be useful** before it executes.
 
 Master's research, Solution Architecture and Data Engineering — Bobur Yusupov, IT Park University.
 
-> **Status: pre-deployment.** The code runs and is tested; no infrastructure has been created and
-> no experiment has been run. Every number in the docs is a design target, not a measurement.
+> **Status: deployed, no experiment run yet.** The environment is live in Azure and L3 gVisor
+> isolation is verified working. No validation batch has been executed, so every number in the
+> docs is still a design target rather than a measurement.
 
 ---
 
@@ -55,7 +56,10 @@ runtime; Layer 3 is what actually holds, because it observes behaviour rather th
 |---|---|---|
 | **L1** | `subprocess` + seccomp-bpf + rlimits | Orchestrator VM (Linux only) |
 | **L2** | Ephemeral container, one per validation | Docker locally, ACI in Azure |
-| **L3** | Pod under a gVisor RuntimeClass | AKS sandbox node pool |
+| **L3** | Pod under a gVisor RuntimeClass | AKS sandbox node pool — **verified** |
+
+L3 is confirmed rather than assumed. The host node runs kernel `6.8.0-1067-azure`; a pod with
+`runtimeClassName: gvisor` reports `4.19.0-gvisor`, which is the Sentry, not the host kernel.
 
 Resource limits come from each agent's own contract, not a fixed ceiling — so an agent that
 declares 256 MB is held to 256 MB.
@@ -85,7 +89,7 @@ corpus/tasks/                    labelled agent corpus, one file per task
 experiments/run_matrix.py        experiment harness with resume
 infra/                           Bicep templates + gVisor DaemonSet
 ops/afctl.py                     resource control panel
-tests/                           67 tests, no external services required
+tests/                           78 tests, no external services required
 ```
 
 ---
@@ -177,6 +181,42 @@ understate standard errors.
 
 ---
 
+## Deployed environment
+
+Live in **centralindia** on an Azure for Students subscription, resource group
+`rg-agentfactory-dev`: orchestrator VM, AKS with a system pool and a tainted gVisor sandbox pool,
+PostgreSQL Flexible Server, GRS blob storage, Key Vault, Log Analytics and Application Insights,
+and a monthly budget with alerts.
+
+Idle burn is about **$0.27/hour (~$194/month)** against a $100 credit, so the environment is meant
+to be switched off between batches:
+
+```bash
+python -m ops.afctl down    # after every session
+```
+
+Three constraints this subscription imposes, all discovered during deployment:
+
+- **Region.** An allowed-locations policy permits only swedencentral, centralindia, austriaeast,
+  denmarkeast and indiasouthcentral.
+- **Quota.** 6 vCPU per region, 4 per D-family, and **no v5 or v6 family has any quota at all**.
+- **SKU availability.** Every D-family SKU that has quota is either capacity-restricted for VMs or
+  refused by AKS. `az vm list-skus` reports these as unrestricted, which is not the same as
+  available — only deployment preflight tells the truth.
+
+The intersection is exactly one family, **B-series v2**, so everything runs on `Standard_B2s_v2`.
+That puts the two nodes carrying RQ2 latency measurements on burstable hardware. The confound
+cannot be removed under this quota, so it is made visible instead: `telemetry/cpu_credits.py`
+samples the CPU credit balance and the harness attaches it to every verdict event, next to the
+latency it may have affected.
+
+Scaling the sandbox pool to zero destroys the gVisor install, because the node comes back as a new
+VM. The installer DaemonSet reinstalls it automatically in a few minutes; `afctl up` says so, and
+`GvisorPodRunner.preflight()` refuses to run a batch until the RuntimeClass resolves — L3 never
+silently degrades to runc.
+
+---
+
 ## What is not done yet
 
 Honest list, so nobody discovers these the hard way:
@@ -185,13 +225,12 @@ Honest list, so nobody discovers these the hard way:
   (30 agents). Tasks 4–30 are research content — the task design is the researcher's judgment
   call, and inventing 27 more would be guesswork dressed as data. The loader enforces the label
   distribution, so adding a task is mechanical.
-- **No infrastructure exists.** The Bicep compiles clean; nothing has been deployed.
-- **gVisor on AKS is unverified.** It needs node customization via a privileged DaemonSet, and it
-  is not Azure's supported sandboxing path (that is Kata). `preflight()` fails loudly rather than
-  silently downgrading. Validate it on an empty cluster before building anything on top.
-- **L1 and L2 runners have not been exercised end-to-end.** Unit-tested via the harness; the real
-  paths need Linux and Docker respectively.
+- **No validation batch has been run.** The environment exists and L3 is verified; the experiment
+  itself has not been executed.
+- **L1 and L2 runners have not been exercised end-to-end.** Unit-tested via the harness; L1 needs
+  Linux (run it on the orchestrator VM) and L2 needs Docker or ACI.
+- **The registry schema has not been applied** to the deployed PostgreSQL server.
 - **Practitioner interviews (RQ5, RQ6)** are outside this repository.
 
 See section 16 of `architecture.md` for the fifteen open questions this implementation is built
-against, including the ones it resolves and the ones it does not.
+against. OQ-2 — whether gVisor on AKS is deployable at all — is now answered: it is.

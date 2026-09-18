@@ -5,6 +5,7 @@ idle: the orchestrator VM and the AKS node pools. Leaving them up over a weekend
 costs more than the whole planned model budget for the study. So this exists to
 make "turn it all off" a single command that is easy enough to actually run.
 
+    afctl preflight   register the providers a new subscription needs
     afctl status      what is running, and what it costs per hour
     afctl down        deallocate the VM, scale AKS to zero, stop PostgreSQL
     afctl up          bring it back
@@ -24,6 +25,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -122,16 +124,54 @@ def _rg_exists(resource_group: str) -> bool:
     return bool(az("group", "exists", "-n", resource_group, check=False))
 
 
+def _set_pool_size(resource_group: str, cluster: str, pool: dict[str, Any], target: int) -> None:
+    """Resize an AKS node pool, autoscaler or not.
+
+    `az aks nodepool scale` is refused outright on an autoscaler-enabled pool —
+    the autoscaler owns the count, so the way to pin a pool at a size is to move
+    its bounds. Getting this wrong is quiet: the scale command fails, the pool
+    keeps running, and the bill keeps arriving.
+    """
+    name = pool["name"]
+    if pool.get("count", 0) == target and not pool.get("enableAutoScaling"):
+        return
+
+    if pool.get("enableAutoScaling"):
+        if pool.get("minCount") == target and pool.get("maxCount") == max(target, 1):
+            return
+        console.print(f"  setting {cluster}/{name} autoscaler bounds to {target}")
+        az("aks", "nodepool", "update", "-g", resource_group,
+           "--cluster-name", cluster, "-n", name,
+           "--update-cluster-autoscaler",
+           "--min-count", str(target), "--max-count", str(max(target, 1)),
+           "-o", "none", check=False)
+    else:
+        console.print(f"  scaling {cluster}/{name} to {target}")
+        az("aks", "nodepool", "scale", "-g", resource_group,
+           "--cluster-name", cluster, "-n", name,
+           "-c", str(target), "--no-wait", check=False)
+
+
 def _collect(resource_group: str) -> list[Resource]:
     resources: list[Resource] = []
 
     for vm in az("vm", "list", "-g", resource_group, check=False) or []:
         name = vm["name"]
         size = vm.get("hardwareProfile", {}).get("vmSize", "?")
-        view = az("vm", "get-instance-view", "-g", resource_group, "-n", name,
-                  "--query", "instanceView.statuses[?starts_with(code,'PowerState')].displayStatus",
-                  check=False) or []
-        state = view[0] if view else "unknown"
+        # Fetch the whole instance view and filter here rather than with
+        # --query. On Windows `az` is a batch shim, and cmd.exe treats `?` and
+        # `[` in a JMESPath expression as syntax of its own — the call fails
+        # with a parse error that looks nothing like an Azure problem.
+        view = az("vm", "get-instance-view", "-g", resource_group, "-n", name, check=False) or {}
+        statuses = (view.get("instanceView") or {}).get("statuses") or []
+        state = next(
+            (
+                s.get("displayStatus", "unknown")
+                for s in statuses
+                if str(s.get("code", "")).startswith("PowerState")
+            ),
+            "unknown",
+        )
         resources.append(
             Resource("VM", name, state, size,
                      HOURLY_ESTIMATES.get(size, 0.0) if "running" in state.lower() else 0.0)
@@ -237,12 +277,8 @@ def down(
     for cluster in az("aks", "list", "-g", resource_group, check=False) or []:
         for pool in cluster.get("agentPoolProfiles", []):
             # Only user pools can reach zero; a system pool needs one node.
-            target = "0" if pool.get("mode") == "User" else "1"
-            if pool.get("count", 0) != int(target):
-                console.print(f"  scaling {cluster['name']}/{pool['name']} to {target}")
-                az("aks", "nodepool", "scale", "-g", resource_group,
-                   "--cluster-name", cluster["name"], "-n", pool["name"],
-                   "-c", target, "--no-wait", check=False)
+            target = 0 if pool.get("mode") == "User" else 1
+            _set_pool_size(resource_group, cluster["name"], pool, target)
 
     for server in az("postgres", "flexible-server", "list", "-g", resource_group, check=False) or []:
         if server.get("state", "").lower() == "ready":
@@ -281,14 +317,17 @@ def up(
     for cluster in az("aks", "list", "-g", resource_group, check=False) or []:
         for pool in cluster.get("agentPoolProfiles", []):
             target = sandbox_nodes if pool.get("mode") == "User" else 1
-            if pool.get("count", 0) != target:
-                console.print(f"  scaling {cluster['name']}/{pool['name']} to {target}")
-                az("aks", "nodepool", "scale", "-g", resource_group,
-                   "--cluster-name", cluster["name"], "-n", pool["name"],
-                   "-c", str(target), "--no-wait", check=False)
+            _set_pool_size(resource_group, cluster["name"], pool, target)
 
-    console.print("\n[green]Startup requested.[/] Give AKS a few minutes before running a batch.")
-    console.print("Then verify L3 with: [bold]kubectl get runtimeclass gvisor[/]")
+    console.print("\n[green]Startup requested.[/]")
+    console.print(
+        "A sandbox node that was scaled to zero comes back as a [bold]new[/] VM, so gVisor is "
+        "not on it yet — the installer DaemonSet reinstalls it automatically, which takes a "
+        "few minutes. L3 is not usable until it finishes."
+    )
+    console.print("\nVerify before running a batch:")
+    console.print("  kubectl -n kube-system rollout status ds/gvisor-installer")
+    console.print("  kubectl get runtimeclass gvisor")
 
 
 @app.command()
@@ -297,7 +336,8 @@ def cost(
     days: int = typer.Option(30, "--days", help="Look-back window."),
 ) -> None:
     """Actual spend, from Cost Management."""
-    scope_sub = az("account", "show", "--query", "id")
+    account = az("account", "show", check=False) or {}
+    scope_sub = account.get("id")
     if not scope_sub:
         console.print("[red]Not logged in.[/] Run: az login")
         raise typer.Exit(1)
@@ -331,6 +371,75 @@ def cost(
     console.print(table)
 
 
+# Namespaces this deployment touches. A fresh subscription has none of them
+# registered, and the failure surfaces mid-deployment as
+# MissingSubscriptionRegistration on whichever resource needs it first — after
+# the rest of the environment already exists. Microsoft.OperationsManagement is
+# the one that is easy to miss: nothing references it directly, AKS pulls it in
+# through the Container Insights addon.
+REQUIRED_PROVIDERS = (
+    "Microsoft.Compute",
+    "Microsoft.Network",
+    "Microsoft.Storage",
+    "Microsoft.ContainerService",
+    "Microsoft.ContainerInstance",
+    "Microsoft.DBforPostgreSQL",
+    "Microsoft.KeyVault",
+    "Microsoft.OperationalInsights",
+    "Microsoft.OperationsManagement",
+    "Microsoft.Insights",
+    "Microsoft.ManagedIdentity",
+    "Microsoft.Consumption",
+)
+
+
+def _registration_state(namespace: str) -> str:
+    return (
+        az("provider", "show", "-n", namespace, "--query", "registrationState",
+           "-o", "tsv", check=False)
+        or "Unknown"
+    )
+
+
+@app.command()
+def preflight(
+    wait: bool = typer.Option(True, "--wait/--no-wait", help="Block until registration finishes."),
+) -> None:
+    """Register the resource providers a new subscription needs.
+
+    Run once per subscription before the first deploy. Registration is free and
+    idempotent; skipping it means discovering the missing namespace only after
+    half the environment is built.
+    """
+    pending: list[str] = []
+    for namespace in REQUIRED_PROVIDERS:
+        if _registration_state(namespace) == "Registered":
+            continue
+        console.print(f"  registering {namespace}")
+        az("provider", "register", "--namespace", namespace, "-o", "none", check=False)
+        pending.append(namespace)
+
+    if not pending:
+        console.print("[green]All providers already registered.[/]")
+        return
+    if not wait:
+        console.print("Registration requested; it continues in the background.")
+        return
+
+    console.print("Waiting for registration...")
+    for _ in range(30):
+        pending = [ns for ns in pending if _registration_state(ns) != "Registered"]
+        if not pending:
+            break
+        time.sleep(10)
+
+    if pending:
+        console.print(f"[yellow]Still registering:[/] {', '.join(pending)}")
+        console.print("Wait a few minutes and re-run, or deploy once they settle.")
+        raise typer.Exit(1)
+    console.print("[green]All providers registered.[/] Ready to deploy.")
+
+
 @app.command()
 def deploy(
     resource_group: str = typer.Option(DEFAULT_RESOURCE_GROUP, "--resource-group", "-g"),
@@ -350,6 +459,13 @@ def deploy(
         console.print(f"[red]Missing environment variables:[/] {', '.join(missing)}")
         console.print("\nSet them in your shell before deploying. For the SSH key:")
         console.print('  export AF_SSH_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)"')
+        raise typer.Exit(1)
+
+    unregistered = [ns for ns in REQUIRED_PROVIDERS if _registration_state(ns) != "Registered"]
+    if unregistered:
+        console.print(f"[yellow]Unregistered providers:[/] {', '.join(unregistered)}")
+        console.print("Run [bold]afctl preflight[/] first, or the deployment fails partway "
+                      "through with resources already created.")
         raise typer.Exit(1)
 
     verb = "Previewing" if what_if else "Deploying"

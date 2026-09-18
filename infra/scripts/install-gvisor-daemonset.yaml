@@ -112,40 +112,79 @@ spec:
             - |
               set -euo pipefail
 
+              # The Mariner core image ships without a CA bundle, tar or
+              # bzip2. Install them explicitly and let a failure stop the
+              # script: a silently missing tool shows up much later as a
+              # confusing error halfway through the install.
+              #
+              # CA certificates matter beyond convenience here — this
+              # downloads a binary that will execute untrusted code, so
+              # reaching for curl --insecure would defeat the checksum
+              # verification that follows.
+              echo "installing prerequisites"
+              tdnf install -y ca-certificates tar bzip2 2>&1 | tail -3
+              update-ca-trust 2>/dev/null || true
+              for tool in curl tar bzip2 sha512sum; do
+                command -v "${tool}" >/dev/null || {
+                  echo "FATAL: ${tool} is missing and could not be installed"
+                  exit 1
+                }
+              done
+
               HOST_BIN=/host/usr/local/bin
-              CONTAINERD_CONF=/host/etc/containerd/config.toml
+              CONF=/host/etc/containerd/config.toml
+
+              # AKS 1.35 ships containerd 2.x, whose CRI plugin path is
+              # "io.containerd.cri.v1.runtime". The containerd 1.x path
+              # ("io.containerd.grpc.v1.cri") is silently ignored by 2.x — the
+              # config parses, containerd starts, and the runtime handler
+              # simply never exists. Derive the prefix from the file instead of
+              # assuming either one.
+              if grep -q 'io.containerd.cri.v1.runtime' "${CONF}"; then
+                PLUGIN='io.containerd.cri.v1.runtime'
+              else
+                PLUGIN='io.containerd.grpc.v1.cri'
+              fi
+              echo "containerd CRI plugin path: ${PLUGIN}"
 
               if [ -x "${HOST_BIN}/runsc" ]; then
-                echo "runsc already installed; verifying containerd config"
+                echo "runsc already present"
               else
-                echo "downloading runsc"
+                # gVisor no longer publishes standalone binaries — the release
+                # is a single tarball holding runsc, the containerd shim, and a
+                # gvisor-bin/ directory of helpers that runsc resolves relative
+                # to its own location. Everything therefore lands in the same
+                # directory; splitting them breaks runsc at startup.
                 ARCH=$(uname -m)
                 URL="https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}"
-                for f in runsc containerd-shim-runsc-v1; do
-                  curl -fsSL "${URL}/${f}" -o "/tmp/${f}"
-                  curl -fsSL "${URL}/${f}.sha512" -o "/tmp/${f}.sha512"
-                  ( cd /tmp && sha512sum -c "${f}.sha512" )
-                  install -m 0755 "/tmp/${f}" "${HOST_BIN}/${f}"
-                done
+                echo "downloading gvisor.tar.bz2 for ${ARCH}"
+                curl -fsSL "${URL}/gvisor.tar.bz2" -o /tmp/gvisor.tar.bz2
+                curl -fsSL "${URL}/gvisor.tar.bz2.sha512" -o /tmp/gvisor.tar.bz2.sha512
+                ( cd /tmp && sha512sum -c gvisor.tar.bz2.sha512 )
+                echo "checksum verified; extracting"
+                tar -xjf /tmp/gvisor.tar.bz2 -C "${HOST_BIN}"
+                chmod 0755 "${HOST_BIN}/runsc" "${HOST_BIN}/containerd-shim-runsc-v1"
+                rm -f /tmp/gvisor.tar.bz2 /tmp/gvisor.tar.bz2.sha512
               fi
 
-              # Register the runsc handler if it is not already there. The
-              # grep guard keeps this idempotent across DaemonSet restarts.
-              if ! grep -q 'containerd.runtimes.runsc' "${CONTAINERD_CONF}"; then
-                echo "registering runsc runtime handler"
-                cat >> "${CONTAINERD_CONF}" <<'TOML'
+              if grep -q "containerd.runtimes.runsc\]" "${CONF}"; then
+                echo "runsc handler already registered"
+              else
+                echo "registering runsc handler"
+                cat >> "${CONF}" <<TOML
 
-              [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
+              [plugins."${PLUGIN}".containerd.runtimes.runsc]
                 runtime_type = "io.containerd.runsc.v1"
               TOML
                 echo "restarting containerd"
                 chroot /host systemctl restart containerd
-              else
-                echo "runsc handler already registered"
+                sleep 5
               fi
 
-              # Prove the handler actually resolves rather than assuming it.
+              # Verify rather than assume: a handler that does not resolve must
+              # fail the DaemonSet, not leave L3 quietly running under runc.
               chroot /host /usr/local/bin/runsc --version
+              echo "gvisor install complete"
           volumeMounts:
             - name: host
               mountPath: /host
