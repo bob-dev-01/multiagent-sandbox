@@ -47,11 +47,13 @@ app = typer.Typer(
 console = Console()
 
 DEFAULT_RESOURCE_GROUP = os.environ.get("AZURE_RESOURCE_GROUP", "rg-agentfactory-dev")
-DEFAULT_LOCATION = os.environ.get("AZURE_LOCATION", "polandcentral")
+DEFAULT_LOCATION = os.environ.get("AZURE_LOCATION", "centralindia")
 
-# Approximate list prices, USD/hour, polandcentral. Used only to show the idle
+# Approximate list prices, USD/hour, centralindia. Used only to show the idle
 # burn rate; `afctl cost` reports what Azure actually billed.
 HOURLY_ESTIMATES: dict[str, float] = {
+    "Standard_B2s_v2": 0.083,
+    "Standard_B2as_v2": 0.075,
     "Standard_D2s_v3": 0.112,
     "Standard_D4s_v3": 0.224,
     "Standard_B1ms": 0.021,

@@ -18,11 +18,22 @@ param tags object
 param subnetId string
 param logAnalyticsWorkspaceId string
 
-@description('Node size for both pools. Constrained by the regional vCPU quota.')
-param nodeSize string = 'Standard_D2s_v3'
+@description('''Sandbox pool node size. B-series v2 is the only family with quota, capacity
+and AKS support on this subscription, so the L3 latency measurements sit on burstable hardware —
+record CPU credit balance alongside them (see vm.bicep for the full reasoning).''')
+param nodeSize string = 'Standard_B2s_v2'
 
-@description('Kubernetes version. Pinned so an upgrade cannot silently break the gVisor DaemonSet.')
-param kubernetesVersion string = '1.32'
+@description('''System pool node size. Kept as its own parameter so the system pool can move
+off the sandbox pool's family if quota ever allows a non-burstable sandbox node.''')
+param systemNodeSize string = 'Standard_B2s_v2'
+
+@description('Maximum nodes per pool. Held at 1 by the regional vCPU quota.')
+param maxNodesPerPool int = 1
+
+@description('''Kubernetes version. Pinned so an upgrade cannot silently break the gVisor
+DaemonSet. 1.35 is the regional default and carries standard support; 1.32 and below are
+LTS-only on this subscription and are rejected at preflight.''')
+param kubernetesVersion string = '1.35'
 
 resource aks 'Microsoft.ContainerService/managedClusters@2024-09-01' = {
   name: '${namePrefix}-aks'
@@ -52,9 +63,9 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-09-01' = {
         mode: 'System'
         count: 1
         minCount: 1
-        maxCount: 2
+        maxCount: maxNodesPerPool
         enableAutoScaling: true
-        vmSize: nodeSize
+        vmSize: systemNodeSize
         osType: 'Linux'
         osSKU: 'Ubuntu'
         osDiskSizeGB: 64
@@ -67,7 +78,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-09-01' = {
         mode: 'User'
         count: 1
         minCount: 0          // scale to zero when idle
-        maxCount: 2
+        maxCount: maxNodesPerPool
         enableAutoScaling: true
         vmSize: nodeSize
         osType: 'Linux'

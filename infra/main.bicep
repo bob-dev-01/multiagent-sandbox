@@ -6,7 +6,7 @@
 //
 // Deploy:
 //   az deployment sub create \
-//     --location polandcentral \
+//     --location centralindia \
 //     --template-file infra/main.bicep \
 //     --parameters infra/params/dev.bicepparam
 //
@@ -16,7 +16,7 @@
 targetScope = 'subscription'
 
 @description('Region for every resource.')
-param location string = 'polandcentral'
+param location string = 'centralindia'
 
 @description('Resource group to create.')
 param resourceGroupName string = 'rg-agentfactory-dev'

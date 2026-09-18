@@ -175,7 +175,7 @@ class AciRunner:
         resource_group: str,
         subnet_id: str | None = None,
         image: str = DEFAULT_IMAGE,
-        location: str = "polandcentral",
+        location: str = "centralindia",
     ) -> None:
         self.resource_group = resource_group
         self.subnet_id = subnet_id

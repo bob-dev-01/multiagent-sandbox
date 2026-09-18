@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -43,6 +44,7 @@ from agentfactory.metrics.core import (  # noqa: E402
     by_isolation_level,
     safety_metrics,
 )
+from agentfactory.telemetry.cpu_credits import build_sampler  # noqa: E402
 from agentfactory.telemetry.events import EventLog, EventType  # noqa: E402
 from agentfactory.validation.aggregator import StrictnessProfile  # noqa: E402
 from agentfactory.validation.layer2_policy import EnterprisePolicy  # noqa: E402
@@ -151,8 +153,17 @@ def main(argv: list[str] | None = None) -> int:
                         help="Refuse to run L1 without an active syscall filter.")
     parser.add_argument("--aci-resource-group", default=None)
     parser.add_argument("--aci-subnet-id", default=None)
-    parser.add_argument("--location", default="polandcentral")
+    parser.add_argument("--location", default="centralindia")
     parser.add_argument("--k8s-namespace", default="agentfactory-sandbox")
+    parser.add_argument(
+        "--vm-resource-id",
+        default=os.environ.get("AGENTFACTORY_VM_RESOURCE_ID"),
+        help=(
+            "Resource id of the orchestrator VM. When set, the CPU credit balance is "
+            "recorded with every latency sample — necessary on burstable hosts, where "
+            "throttling would otherwise be indistinguishable from isolation-level cost."
+        ),
+    )
     args = parser.parse_args(argv)
 
     levels = [lvl.strip().upper() for lvl in args.levels.split(",") if lvl.strip()]
@@ -191,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
     by_task = {t.task_id: t for t in tasks}
     policy = EnterprisePolicy.load()
     profile = StrictnessProfile.named(args.profile)
+
+    credit_sampler = build_sampler(args.vm_resource_id)
+    if args.vm_resource_id:
+        probe = credit_sampler.sample()
+        print(f"  cpu credit sampling: {'active' if probe.available else 'unavailable'}")
 
     runners: dict[str, Any] = {}
     observations: list[Observation] = []
@@ -263,6 +279,9 @@ def main(argv: list[str] | None = None) -> int:
                     "failure_mode": agent.failure_mode,
                     "strictness_profile": args.profile,
                     "sandbox_reached": result.report_for(ValidationLayer.SANDBOX) is not None,
+                    # Credit state travels with the latency it may have affected,
+                    # so the analysis can condition on it instead of guessing.
+                    **credit_sampler.sample().as_detail(),
                 },
             )
 
