@@ -195,7 +195,9 @@ class SubprocessRunner:
 
         elapsed_ms = (time.perf_counter() - started) * 1000
 
-        trace = parse_harness_result(
+        # seccomp status comes back inside the harness report and is carried on
+        # the trace itself, so no post-hoc annotation is needed here.
+        return parse_harness_result(
             stdout,
             level=self.level,
             exit_code=code,
@@ -203,13 +205,4 @@ class SubprocessRunner:
             timed_out=timed_out,
             stderr=stderr,
             expected_output=request.expected_output,
-        )
-        # Record whether the syscall filter was actually in force, so a run made
-        # without it is never silently read as one made with it.
-        return trace.model_copy(
-            update={
-                "stderr_tail": (
-                    f"[seccomp_active={seccomp_available()}]\n{trace.stderr_tail}"
-                )[-4000:]
-            }
         )

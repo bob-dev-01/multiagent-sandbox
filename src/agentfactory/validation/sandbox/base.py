@@ -157,5 +157,6 @@ def parse_harness_result(
         peak_memory_mb=peak_memory_mb,
         stdout_tail=raw_stdout[-4000:],
         stderr_tail=stderr[-4000:],
+        seccomp_active=report.get("seccomp_active"),
     )
 

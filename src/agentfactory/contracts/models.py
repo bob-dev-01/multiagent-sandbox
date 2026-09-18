@@ -21,7 +21,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 # Hard ceilings. A contract may declare less than these; it may never declare more.
 # The sandbox is configured *from* the contract (see OQ-15 in architecture.md), so
@@ -245,6 +245,12 @@ class ExecutionTrace(BaseModel):
     peak_memory_mb: Annotated[float, Field(ge=0)] = 0.0
     stdout_tail: str = ""
     stderr_tail: str = ""
+    # Whether a kernel syscall filter was actually in force. Only meaningful
+    # for L1, where the filter is optional — an L1 run made without one is a
+    # valid run of the rlimits configuration, but it is not the configuration
+    # RQ2 describes, and the difference must be visible in the data rather than
+    # inferred from a log line.
+    seccomp_active: bool | None = None
 
     @property
     def has_safety_violation(self) -> bool:
