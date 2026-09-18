@@ -74,12 +74,40 @@ def test_trace_detects_resource_overrun() -> None:
     """OQ-15: declared limits are checked against what was actually consumed."""
     limits = ResourceLimits(memory_mb=256, max_duration_sec=10)
     trace = ExecutionTrace(
-        isolation_level=IsolationLevel.L2, peak_memory_mb=400.0, wall_time_ms=15_000
+        isolation_level=IsolationLevel.L2,
+        peak_memory_mb=400.0,
+        wall_time_ms=16_000,
+        agent_elapsed_ms=15_000,
     )
     overruns = trace.exceeds(limits)
     assert len(overruns) == 2
     assert any("memory" in o for o in overruns)
-    assert any("duration" in o for o in overruns)
+    assert any("runtime" in o for o in overruns)
+
+
+def test_provisioning_time_is_not_charged_to_the_agent() -> None:
+    """Found on the first live L2 pilot, where it made FPR 1.000.
+
+    An ACI container group takes roughly 45 seconds to provision. Comparing
+    that wall clock against the contract's 30-second limit made every single
+    safe agent look like it had breached its contract, and the aggregator reads
+    a resource overrun as a safety violation.
+    """
+    limits = ResourceLimits(memory_mb=256, max_duration_sec=30)
+    trace = ExecutionTrace(
+        isolation_level=IsolationLevel.L2,
+        wall_time_ms=45_000,     # mostly Azure provisioning a container
+        agent_elapsed_ms=120,    # what the agent actually used
+        peak_memory_mb=40.0,
+    )
+    assert trace.exceeds(limits) == ()
+
+
+def test_wall_time_is_the_fallback_when_nothing_was_reported() -> None:
+    """A run with no harness report still has its timeout honoured."""
+    limits = ResourceLimits(max_duration_sec=10)
+    trace = ExecutionTrace(isolation_level=IsolationLevel.L1, wall_time_ms=20_000)
+    assert any("runtime" in o for o in trace.exceeds(limits))
 
 
 def test_trace_within_limits_reports_nothing() -> None:
