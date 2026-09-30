@@ -56,7 +56,7 @@ runtime; Layer 3 is what actually holds, because it observes behaviour rather th
 | | Mechanism | Where it runs |
 |---|---|---|
 | **L1** | `subprocess` + seccomp-bpf + rlimits | Orchestrator VM (Linux only) |
-| **L2** | Ephemeral container, one per validation | Docker locally, ACI in Azure |
+| **L2** | runc pod, one per validation | AKS sandbox pool, same nodes as L3 (ACI and Docker kept as provisioning conditions) |
 | **L3** | Pod under a gVisor RuntimeClass | AKS sandbox node pool — **verified** |
 
 L3 is confirmed rather than assumed. The host node runs kernel `6.8.0-1067-azure`; a pod with
@@ -198,34 +198,47 @@ Read this as "the filter catches what we planted", not "the filter is robust". T
 researcher-injected violations of known patterns, which is exactly the optimistic bias recorded as
 OQ-9. A perfect score against a corpus you wrote yourself is a smoke test passing, not a result.
 
-### Latency, and the finding that matters
+### Latency
 
-| Level | Mechanism | p50 | p95 | Budget |
+Sandbox runs only (the 21 of 30 agents that pass Layers 1–2), p50 of wall-clock time:
+
+| Level | Mechanism | Kernel seen by the agent | p50 | Budget |
 |---|---|---|---|---|
-| **L1** | subprocess + seccomp-bpf | **58 ms** | 64 ms | < 300 ms ✅ |
-| **L3** | AKS pod, gVisor RuntimeClass | **7.5 s** | 9.6 s | < 8 s ✅ |
-| **L2** | ephemeral ACI container group | **43.5 s** | 45.8 s | < 3 s ❌ **15× over** |
+| **L1** | subprocess + seccomp-bpf, orchestrator VM | host (`6.17.0-azure`) | **59 ms** | < 300 ms ✅ |
+| **L2** | runc pod, AKS sandbox pool | host (`6.8.0-azure`) | **6.9 s** | < 3 s ❌ |
+| **L3** | gVisor pod, same pool | `4.19.0-gvisor` | **7.0 s** | < 8 s ✅ |
+| *(L2 on ACI)* | *ephemeral container group* | *host* | *43.5 s* | *— provisioning condition* |
 
-**The ordering is not monotonic: L1 ≪ L3 ≪ L2.** The strongest isolation level is roughly six
-times *faster* than the middle one.
+Every L2 and L3 run reports the kernel it executed under, and a run whose kernel does not match
+its level is rejected rather than recorded — all 21 L2 runs saw the host kernel, all 21 L3 runs
+saw gVisor's.
 
-This contradicts the premise the design was built on. RQ2 asks how isolation strength trades off
-against latency, and the Security-Latency Score assumes the trade is monotonic — more isolation,
-more milliseconds. The measurement says latency is dominated by the *provisioning model*, not by
-the isolation mechanism. An AKS node is already running, so an L3 pod only has to be scheduled. An
-ACI container group is built from nothing on every single validation, and that provisioning is
-essentially all of the 43.5 seconds.
+**A retraction, before anything is read into these.** An earlier version of this section reported
+L3 at 7.5 s and 8.6 s and concluded that L3 was six times faster than L2. Those L3 figures were
+invalid: the image had moved to MCR's Python, which ships `python3` only, while the pod command
+still called `python`. Every L3 pod failed at `StartError` before the agent ran, and the failure
+was scored as `FAIL_INCORRECT` — so the number was the time taken to fail to start a container.
+The ACI figure of 43.5 s was genuine and stands. The trace now records whether the harness
+reported at all, and a run with no report that cannot be attributed to the agent is refused
+rather than scored.
 
-So the honest reading is that the current design compares three isolation mechanisms *and* two
-provisioning models at once, and the provisioning model wins. The fix is an experimental-design
-change rather than a code change: run L2 as a standard runc pod on the same AKS cluster, so L2 and
-L3 differ only in `runtimeClassName`. Then the latency difference measures gVisor, which is what
-RQ2 is actually asking about. That decision belongs to the researcher, so it has not been made
-unilaterally.
+What the valid numbers say:
 
-Secondary observation: at L1, wall time is 39 ms while the agent itself runs for 1.2 ms. Even at
-the fastest level, almost all of the measured latency is process startup. `ExecutionTrace` now
-records both numbers separately.
+- **ACI's 43.5 s was provisioning.** Moving L2 onto the same warm node pool as L3 brings it to
+  6.9 s with nothing else changed. That is why L2 now runs as a runc pod: so L2 and L3 differ only
+  in `runtimeClassName`, and the comparison is about isolation rather than about how Azure
+  hands out containers.
+- **The agent's own runtime is negligible** — 0.20 ms under runc, 0.26 ms under gVisor. At the
+  pod levels almost all of the ~7 s is pod lifecycle: apply, schedule, start, poll, fetch logs.
+- **The measured L2→L3 gap (~0.16 s at p50) is below what the instrument can resolve.** The
+  runner polls pod status once a second, so wall-clock differences under about a second are
+  noise from the poll, not a property of gVisor. Measuring gVisor's overhead needs the pod's own
+  container start/finish timestamps rather than wall-clock around kubectl. Until that is in
+  place, RQ2 cannot be answered from these numbers.
+
+CPU credits on the sandbox node were sampled on every verdict and stayed between 61 and 64
+throughout, so this pilot shows no throttling. It was also a light load; a fresh node comes up
+with a small balance after every scale-from-zero, which is the case to watch in a long batch.
 
 ### seccomp
 

@@ -318,7 +318,7 @@ The architecture treats isolation strength as a **tunable, task-assignable param
 | Level | Technology | Isolation mechanism | Expected latency | Security guarantee | Intended for |
 |---|---|---|---|---|---|
 | **L1** | `subprocess` + seccomp-bpf on the VM | Syscall filter blocks `execve`, `socket`, etc.; no container overhead | ~50–200 ms | **Low** — shares the VM kernel | Low-risk, read-only agents |
-| **L2** | Azure Container Instances — ephemeral Docker | Separate PID/net/mount namespaces; container group destroyed after verdict; per-second billing, zero idle cost | ~800 ms – 2.5 s | **Medium** — strong process and filesystem isolation; kernel shared | Most enterprise tasks |
+| **L2** | runc pod on the AKS sandbox pool (originally ACI — see OQ-4) | Separate PID/net/mount namespaces and cgroups; pod deleted after verdict; same node, image and limits as L3 | 6.9 s measured (ACI: 43.5 s) | **Medium** — strong process and filesystem isolation; host kernel shared | Most enterprise tasks |
 | **L3** | ACI + gVisor (`runsc`) | gVisor Sentry intercepts syscalls before the host kernel | ~3–7 s | **High** — host kernel unreachable | High-risk agents touching sensitive data |
 
 **Escalation model (integration test):** L1 first; on L1 `PASS`, escalate to L2; L3 for tasks assigned a high-risk tier. Note that escalation makes latency **additive** across levels, whereas the per-level budgets in §3.2 are stated for a single level in isolation (OQ-7).
@@ -607,41 +607,36 @@ Three separate problems:
 
 §4.2 states the Orchestrator is hosted on `Standard_B2s`; §4.4.0 and the budget table state `Standard_D4s_v3` (4 vCPU, 16 GB). `B2s` is a burstable 2 vCPU / 4 GB instance — a materially different machine, and burstable CPU credits would add variance to exactly the latency measurements the study depends on. This document assumes `D4s_v3` with `B2s` as a credit-conservation fallback. **Confirm.**
 
-### OQ-4 — **ANSWERED by measurement.** L2 is 15× over budget, and the ordering inverts — High
+### OQ-4 — **ANSWERED by measurement**, and partly retracted — High
 
-This was open; a pilot run against the live environment closed it.
+**What was measured.** Sandbox runs only, p50 wall-clock, one replicate:
 
-| Level | Mechanism | p50 measured | Budget |
+| Level | Mechanism | Kernel inside the sandbox | p50 |
 |---|---|---|---|
-| L1 | subprocess + seccomp-bpf | 58 ms | < 300 ms ✅ |
-| L3 | AKS pod, gVisor RuntimeClass | 7.5 s | < 8 s ✅ |
-| L2 | ephemeral ACI container group | **43.5 s** | < 3 s ❌ |
+| L1 | subprocess + seccomp-bpf | host | 59 ms |
+| L2 | runc pod on the AKS sandbox pool | host | 6.9 s |
+| L3 | gVisor pod on the same pool | `4.19.0-gvisor` | 7.0 s |
+| — | L2 on ephemeral ACI (original design) | host | 43.5 s |
 
-Task 7 estimated ACI cold start at 800 ms – 2.5 s. The measured figure is 43.5 s at p50 with a
-p95 of 45.8 s — extremely consistent, so this is a property of the platform rather than noise.
+**Retraction.** An earlier revision of this section reported L3 at 7.5 s and concluded that the
+latency ordering inverts, with L3 six times faster than L2. The L3 figures were invalid: every L3
+pod failed at `StartError` (the image ships `python3`, the command called `python`) and the
+failure was scored as an incorrect agent. The ordering claim does not stand. The ACI figure was
+genuine.
 
-The more important result is the shape rather than the magnitude: **L1 ≪ L3 ≪ L2**. The strongest
-isolation level is about six times faster than the middle one.
+**What the valid data does say.**
 
-That inverts the assumption RQ2 rests on. The Security-Latency Score treats isolation strength and
-latency as trading against each other monotonically; the data says latency is governed by the
-**provisioning model**, not the isolation mechanism. An AKS node is already warm, so an L3 pod is
-merely scheduled. An ACI container group is constructed from nothing for every validation, and that
-construction is essentially the entire 43.5 s.
-
-As it stands the design varies two things at once — three isolation mechanisms and two provisioning
-models — and the provisioning model dominates. Any RQ2 answer computed from these conditions would
-be measuring Azure's container-group provisioning latency while appearing to measure gVisor.
-
-**Proposed resolution, requiring a researcher decision:** run L2 as a standard runc pod on the same
-AKS cluster, so L2 and L3 differ only in `runtimeClassName`. The isolation mechanism then becomes
-the sole varying factor and the comparison means what RQ2 says it means. ACI would remain
-interesting as a separate, honestly-labelled *provisioning* condition rather than as an isolation
-level. This has not been changed unilaterally because it alters the experimental design.
-
-Secondary: at L1, wall-clock is 39 ms while the agent itself runs 1.2 ms. Process startup dominates
-even at the fastest level, so `ExecutionTrace` now records provisioning and agent runtime
-separately — and the contract's duration limit is checked against the latter (see OQ-15).
+1. Task 7's estimate of 800 ms – 2.5 s for ACI was off by more than an order of magnitude, and the
+   43.5 s is provisioning, not isolation: the same L2 workload on a warm AKS node takes 6.9 s. So the
+   original design compared provisioning models while appearing to compare isolation mechanisms.
+   L2 now runs as a runc pod on the same pool as L3, differing only in `runtimeClassName`; ACI is
+   kept as a separately labelled provisioning condition.
+2. At the pod levels the agent runs for well under a millisecond; the ~7 s is pod lifecycle. The
+   per-level budgets in §3.2 were written as if isolation were the dominant cost. It is not.
+3. The observed L2→L3 gap (~0.16 s) is smaller than the runner's one-second status poll, so the
+   present instrument cannot resolve gVisor's overhead. **RQ2 is not answerable from wall-clock
+   around kubectl.** It needs container-level start and finish timestamps from the pod status —
+   an instrumentation change, open at the time of writing.
 
 ### OQ-5 — Security-Latency Score is unit-dependent and has a singularity — Medium
 
