@@ -126,6 +126,7 @@ def parse_harness_result(
     stderr: str = "",
     expected_output: dict[str, Any] | None = None,
     extra_syscalls: tuple[str, ...] = (),
+    terminated_reason: str | None = None,
 ) -> ExecutionTrace:
     """Turn the harness's JSON report into an ExecutionTrace.
 
@@ -135,10 +136,12 @@ def parse_harness_result(
     clean trace.
     """
     report: dict[str, Any] = {}
+    found = False
     for line in reversed(raw_stdout.splitlines()):
         if line.startswith(HARNESS_SENTINEL):
             try:
                 report = json.loads(line[len(HARNESS_SENTINEL) :])
+                found = True
             except json.JSONDecodeError:
                 report = {}
             break
@@ -159,5 +162,49 @@ def parse_harness_result(
         stderr_tail=stderr[-4000:],
         seccomp_active=report.get("seccomp_active"),
         agent_elapsed_ms=report.get("elapsed_ms"),
+        kernel_release=report.get("kernel_release"),
+        harness_reported=found,
+        terminated_reason=terminated_reason,
+    )
+
+
+# Termination reasons that mean the platform never ran the harness. None of
+# them says anything about the agent.
+PLATFORM_START_FAILURES = frozenset({
+    "StartError",
+    "ContainerCannotRun",
+    "CreateContainerError",
+    "CreateContainerConfigError",
+    "ErrImagePull",
+    "ImagePullBackOff",
+    "InvalidImageName",
+    "RunContainerError",
+})
+
+
+def require_attributable(trace: ExecutionTrace, *, agent_caused: bool) -> ExecutionTrace:
+    """Refuse a trace that says nothing about the agent.
+
+    The harness catches every exception the agent raises and still reports, so
+    a missing report means the harness itself never finished. Sometimes that is
+    still the agent's doing — it ran out of memory, or out of time — and the
+    runner, which can see how the process ended, says so via `agent_caused`.
+    Otherwise it is the platform: an image with no python on PATH, a container
+    that could not be created. Returning such a trace would let the aggregator
+    read "no output" as "wrong output" and record FAIL_INCORRECT for an agent
+    that never executed — the defect that invalidated two rounds of L3 latency
+    measurements before anyone looked at the exit codes.
+
+    An agent that deliberately kills its own interpreter (os._exit) also lands
+    here. It surfaces as a cell that keeps failing rather than as a verdict,
+    which is visible — the right way round to be wrong.
+    """
+    if trace.harness_reported or trace.timed_out or agent_caused:
+        return trace
+    detail = trace.terminated_reason or f"exit code {trace.exit_code}"
+    raise SandboxExecutionError(
+        f"{trace.isolation_level.value}: the harness produced no report ({detail}); "
+        f"the agent cannot be judged on a run it never made. "
+        f"stderr: {trace.stderr_tail.strip()[:300]}"
     )
 

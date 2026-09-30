@@ -30,8 +30,8 @@ param namePrefix string = 'agentfac'
 param environment string = 'dev'
 
 @secure()
-@description('PostgreSQL administrator password.')
-param postgresAdminPassword string
+@description('PostgreSQL administrator password. Ignored when deployPostgres is false.')
+param postgresAdminPassword string = ''
 
 @description('SSH public key for the orchestrator VM.')
 param sshPublicKey string
@@ -50,6 +50,11 @@ param budgetStartDate string
 
 @description('Deploy AKS. Set false for a cheaper L1/L2-only environment.')
 param deployAks bool = true
+
+@description('''Deploy the Agent Registry database. Off by default: only the integration test
+reads or writes the registry, and a stopped Flexible Server restarts itself after 7 days, so an
+idle one is a recurring charge rather than a one-off. Turn it on when the integration test runs.''')
+param deployPostgres bool = false
 
 var tags = {
   project: 'agentfactory'
@@ -98,7 +103,7 @@ module storage 'modules/storage.bicep' = {
   }
 }
 
-module postgres 'modules/postgres.bicep' = {
+module postgres 'modules/postgres.bicep' = if (deployPostgres) {
   scope: rg
   name: 'postgres'
   params: {
@@ -175,8 +180,8 @@ output vmName string = vm.outputs.vmName
 output vmPrivateIp string = vm.outputs.vmPrivateIp
 output keyVaultName string = keyvault.outputs.keyVaultName
 output storageAccountName string = storage.outputs.storageAccountName
-output postgresFqdn string = postgres.outputs.postgresFqdn
-output databaseName string = postgres.outputs.databaseName
+output postgresFqdn string = postgres.?outputs.postgresFqdn ?? ''
+output databaseName string = postgres.?outputs.databaseName ?? ''
 output sandboxSubnetId string = network.outputs.sandboxSubnetId
 output aksName string = aks.?outputs.aksName ?? ''
 output appInsightsConnectionString string = observability.outputs.appInsightsConnectionString

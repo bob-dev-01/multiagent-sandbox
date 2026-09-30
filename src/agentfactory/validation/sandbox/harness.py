@@ -22,6 +22,7 @@ import builtins
 import io
 import json
 import os
+import platform
 import sys
 import time
 import traceback
@@ -313,6 +314,9 @@ def main() -> int:
         "tool_invocations": _tool_invocations,
         "syscalls_blocked": [],
         "seccomp_active": seccomp_active,
+        # Which kernel the agent actually ran against — the evidence for the
+        # isolation level, independent of how the sandbox was configured.
+        "kernel_release": platform.release(),
     }
     sys.stdout.write(SENTINEL + json.dumps(report, default=str) + "\n")
     sys.stdout.flush()

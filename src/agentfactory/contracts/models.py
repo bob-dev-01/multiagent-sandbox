@@ -21,7 +21,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.3.0"
 
 # Hard ceilings. A contract may declare less than these; it may never declare more.
 # The sandbox is configured *from* the contract (see OQ-15 in architecture.md), so
@@ -257,6 +257,19 @@ class ExecutionTrace(BaseModel):
     # RQ2 describes, and the difference must be visible in the data rather than
     # inferred from a log line.
     seccomp_active: bool | None = None
+    # Kernel release as seen from inside the sandbox. Under gVisor this is the
+    # Sentry's synthetic release (it contains "gvisor"); under runc it is the
+    # host's. Recorded on every run so the isolation level each result claims
+    # is evidenced by the run itself rather than by the configuration.
+    kernel_release: str | None = None
+    # Whether the harness's sentinel-prefixed report was found. False means the
+    # harness never finished — the container may never have started at all —
+    # so nothing in this trace describes the agent's behaviour.
+    harness_reported: bool = True
+    # Platform-reported termination reason where one exists (e.g. Kubernetes
+    # "OOMKilled", "StartError"). The only way to tell an agent that exhausted
+    # its memory from a container that could not be created.
+    terminated_reason: str | None = None
 
     @property
     def has_safety_violation(self) -> bool:
@@ -279,6 +292,9 @@ class ExecutionTrace(BaseModel):
             overruns.append(
                 f"memory {self.peak_memory_mb:.1f}MB > declared {limits.memory_mb}MB"
             )
+        elif self.terminated_reason == "OOMKilled":
+            # The kernel enforced the contract's memory limit for us.
+            overruns.append(f"killed for exceeding declared {limits.memory_mb}MB")
         # Charge the agent for its own runtime, not for the platform's.
         # Using wall_time_ms here made every L2 run a contract violation: an ACI
         # container group takes ~45 s to provision against a declared 30 s

@@ -35,6 +35,7 @@ from .base import (
     SandboxRequest,
     SandboxUnavailableError,
     parse_harness_result,
+    require_attributable,
     resolve_executable,
 )
 
@@ -126,6 +127,7 @@ class DockerRunner:
             kwargs["runtime"] = self.runtime
 
         container = client.containers.create(**kwargs)
+        oom_killed = False
         started = time.perf_counter()
         timed_out = False
         stdout = stderr = ""
@@ -148,6 +150,12 @@ class DockerRunner:
 
             stdout = container.logs(stdout=True, stderr=False).decode("utf-8", "replace")
             stderr = container.logs(stdout=False, stderr=True).decode("utf-8", "replace")
+            # Read the OOM flag before the container is removed; it is the only
+            # way to tell an agent that blew its memory limit from a container
+            # that failed for reasons of its own.
+            with contextlib.suppress(Exception):
+                container.reload()
+                oom_killed = bool(container.attrs.get("State", {}).get("OOMKilled"))
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000
             # Best effort: a leaked container costs money but must not mask
@@ -155,7 +163,7 @@ class DockerRunner:
             with contextlib.suppress(Exception):
                 container.remove(force=True)
 
-        return parse_harness_result(
+        trace = parse_harness_result(
             stdout,
             level=self.level,
             exit_code=exit_code,
@@ -163,7 +171,9 @@ class DockerRunner:
             timed_out=timed_out,
             stderr=stderr,
             expected_output=request.expected_output,
+            terminated_reason="OOMKilled" if oom_killed else None,
         )
+        return require_attributable(trace, agent_caused=oom_killed)
 
 
 class AciRunner:
@@ -315,7 +325,7 @@ class AciRunner:
                     capture_output=True, text=True, timeout=180, check=False,
                 )
 
-        return parse_harness_result(
+        trace = parse_harness_result(
             stdout,
             level=self.level,
             exit_code=exit_code,
@@ -324,3 +334,4 @@ class AciRunner:
             stderr=stderr,
             expected_output=request.expected_output,
         )
+        return require_attributable(trace, agent_caused=False)

@@ -41,6 +41,28 @@ except ImportError:  # pragma: no cover
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+
+def _load_dotenv(path: Path) -> None:
+    """Read KEY=VALUE lines from .env into the environment, without overriding.
+
+    A few lines rather than a dependency: afctl should run in a bare venv with
+    only typer and rich, which is exactly when someone is trying to shut
+    something down in a hurry.
+    """
+    if not path.exists():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        if key and value:
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv(REPO_ROOT / ".env")
+
 app = typer.Typer(
     add_completion=False,
     help="Control panel for the Agent Factory Azure environment.",
@@ -222,6 +244,48 @@ def _collect(resource_group: str) -> list[Resource]:
         )
 
     return resources
+
+
+# --------------------------------------------------------------- guard
+
+
+@app.callback()
+def _require_expected_subscription() -> None:
+    """Refuse to touch anything unless the az CLI points at our subscription.
+
+    az keeps one ambient "current subscription" per machine, and it moves:
+    after a fortnight away it had drifted back to a shared subscription that
+    hosts ITPU production workloads. Every command here addresses resources by
+    resource-group name only, so `deploy` would have built an environment that
+    executes untrusted code next to production — and `nuke`, pointed at a
+    same-named group, would delete whatever it found there.
+
+    The guard refuses rather than switching: silently changing the machine's
+    az context would surprise every other tool on it. The subscription id
+    lives in the gitignored .env, not in code, because this repository is
+    public.
+    """
+    expected = os.environ.get("AZURE_SUBSCRIPTION_ID", "").strip().lower()
+    if not expected:
+        console.print("[red]AZURE_SUBSCRIPTION_ID is not set.[/]")
+        console.print(
+            "Put it in .env at the repository root (gitignored), e.g.\n"
+            "  AZURE_SUBSCRIPTION_ID=<subscription id>\n"
+            "afctl will not run against whichever subscription az happens to be on."
+        )
+        raise typer.Exit(2)
+
+    account = az("account", "show", check=False) or {}
+    current = str(account.get("id", "")).lower()
+    if current != expected:
+        console.print(
+            f"[red]az is pointed at the wrong subscription.[/]\n"
+            f"  current:  {account.get('name', '?')} ({current or 'not logged in'})\n"
+            f"  expected: {expected}\n\n"
+            f"Switch explicitly, then re-run:\n"
+            f"  az account set --subscription {expected}"
+        )
+        raise typer.Exit(2)
 
 
 # --------------------------------------------------------------- commands
@@ -473,10 +537,18 @@ def deploy(
 ) -> None:
     """Deploy the Bicep templates.
 
-    Requires AF_PG_PASSWORD and AF_SSH_PUBLIC_KEY in the environment; the
-    parameter file reads them from there so no secret is ever committed.
+    Requires AF_SSH_PUBLIC_KEY in the environment, and AF_PG_PASSWORD when the
+    registry database is enabled; the parameter file reads both from there so
+    no secret is ever committed.
     """
-    missing = [v for v in ("AF_PG_PASSWORD", "AF_SSH_PUBLIC_KEY") if not os.environ.get(v)]
+    missing = [v for v in ("AF_SSH_PUBLIC_KEY",) if not os.environ.get(v)]
+    if not os.environ.get("AF_PG_PASSWORD"):
+        # Only needed when the registry database is deployed, which is off by
+        # default (deployPostgres in the parameter file).
+        console.print(
+            "[dim]AF_PG_PASSWORD not set — fine unless deployPostgres is true. "
+            "The stored password is in Key Vault as postgres-admin-password.[/]"
+        )
     if missing:
         console.print(f"[red]Missing environment variables:[/] {', '.join(missing)}")
         console.print("\nSet them in your shell before deploying. For the SSH key:")

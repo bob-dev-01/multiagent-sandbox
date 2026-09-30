@@ -82,21 +82,36 @@ def build_runner(level: IsolationLevel, args: argparse.Namespace) -> Any:
         return SubprocessRunner(require_seccomp=args.require_seccomp)
 
     if level is IsolationLevel.L2:
-        if args.aci_resource_group:
+        # Default: a runc pod on the same node pool as L3, so L2 and L3 differ
+        # only in runtimeClassName and the latency gap measures the isolation
+        # mechanism. ACI and local Docker remain available, but they change the
+        # provisioning model as well as the isolation, which is exactly the
+        # confound the pilot exposed (OQ-4) — use them as labelled provisioning
+        # conditions, not as the L2 of an RQ2 comparison.
+        if args.l2_backend == "aci":
             from agentfactory.validation.sandbox.l2_container import AciRunner
 
+            if not args.aci_resource_group:
+                raise SandboxUnavailableError("--l2-backend aci needs --aci-resource-group")
             return AciRunner(
                 resource_group=args.aci_resource_group,
                 subnet_id=args.aci_subnet_id,
                 location=args.location,
             )
-        from agentfactory.validation.sandbox.l2_container import DockerRunner
+        if args.l2_backend == "docker":
+            from agentfactory.validation.sandbox.l2_container import DockerRunner
 
-        return DockerRunner()
+            return DockerRunner()
 
-    from agentfactory.validation.sandbox.l3_gvisor import GvisorPodRunner
+        from agentfactory.validation.sandbox.pod_runner import runc_pod_runner
 
-    runner = GvisorPodRunner(namespace=args.k8s_namespace)
+        runner = runc_pod_runner(namespace=args.k8s_namespace, kube_context=args.kube_context)
+        runner.preflight()
+        return runner
+
+    from agentfactory.validation.sandbox.pod_runner import gvisor_pod_runner
+
+    runner = gvisor_pod_runner(namespace=args.k8s_namespace, kube_context=args.kube_context)
     runner.preflight()  # fail now, not halfway through the batch
     return runner
 
@@ -167,6 +182,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--location", default="centralindia")
     parser.add_argument("--k8s-namespace", default="agentfactory-sandbox")
     parser.add_argument(
+        "--kube-context",
+        default=os.environ.get("AGENTFACTORY_KUBE_CONTEXT", "agentfac-aks"),
+        help="kubectl context for L2/L3. Pinned so a batch cannot drift to another cluster.",
+    )
+    parser.add_argument(
+        "--l2-backend",
+        choices=["pod", "aci", "docker"],
+        default="pod",
+        help=(
+            "pod (default): runc pod on the L3 node pool, isolating the runtime as the only "
+            "difference from L3. aci / docker also change the provisioning model."
+        ),
+    )
+    parser.add_argument(
+        "--sandbox-vmss-id",
+        default=os.environ.get("AGENTFACTORY_SANDBOX_VMSS_ID"),
+        help=(
+            "Resource id of the AKS sandbox node pool's scale set. L2 and L3 run there, "
+            "and it is burstable too, so its credit balance is sampled for those levels. "
+            "With the pool capped at one node the scale-set metric is that node's."
+        ),
+    )
+    parser.add_argument(
         "--vm-resource-id",
         default=os.environ.get("AGENTFACTORY_VM_RESOURCE_ID"),
         help=(
@@ -214,10 +252,28 @@ def main(argv: list[str] | None = None) -> int:
     policy = EnterprisePolicy.load()
     profile = StrictnessProfile.named(args.profile)
 
-    credit_sampler = build_sampler(args.vm_resource_id)
-    if args.vm_resource_id:
-        probe = credit_sampler.sample()
-        print(f"  cpu credit sampling: {'active' if probe.available else 'unavailable'}")
+    # Each level is sampled on the host that actually runs it. Sampling only the
+    # orchestrator VM — as the first version did — left the L2/L3 node, which
+    # is equally burstable, unmeasured: the confound the sampler exists to
+    # expose was invisible exactly where the RQ2 comparison happens.
+    credit_samplers = {
+        "L1": build_sampler(args.vm_resource_id),
+        "L2": build_sampler(args.sandbox_vmss_id),
+        "L3": build_sampler(args.sandbox_vmss_id),
+    }
+    credit_hosts = {
+        "L1": args.vm_resource_id,
+        "L2": args.sandbox_vmss_id,
+        "L3": args.sandbox_vmss_id,
+    }
+    for lvl in levels:
+        host = credit_hosts.get(lvl)
+        if host:
+            probe = credit_samplers[lvl].sample()
+            state = "active" if probe.available else "unavailable"
+            print(f"  cpu credit sampling for {lvl}: {state} ({host.rsplit('/', 1)[-1]})")
+        else:
+            print(f"  cpu credit sampling for {lvl}: off (no host id given)")
 
     runners: dict[str, Any] = {}
     observations: list[Observation] = []
@@ -302,7 +358,8 @@ def main(argv: list[str] | None = None) -> int:
                     "sandbox_reached": result.report_for(ValidationLayer.SANDBOX) is not None,
                     # Credit state travels with the latency it may have affected,
                     # so the analysis can condition on it instead of guessing.
-                    **credit_sampler.sample().as_detail(),
+                    **credit_samplers[cell.isolation_level].sample().as_detail(),
+                    "credit_host": (credit_hosts.get(cell.isolation_level) or "").rsplit("/", 1)[-1],
                 },
             )
 

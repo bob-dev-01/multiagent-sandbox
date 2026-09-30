@@ -12,7 +12,9 @@ param environment = 'dev'
 // az deployment sub create ... reads these from the shell:
 //   export AF_PG_PASSWORD='...'            (or $env:AF_PG_PASSWORD in PowerShell)
 //   export AF_SSH_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)"
-param postgresAdminPassword = readEnvironmentVariable('AF_PG_PASSWORD')
+// Only read when deployPostgres is true; the stored copy lives in Key Vault as
+// postgres-admin-password.
+param postgresAdminPassword = readEnvironmentVariable('AF_PG_PASSWORD', '')
 param sshPublicKey = readEnvironmentVariable('AF_SSH_PUBLIC_KEY')
 
 // az ad signed-in-user show --query id -o tsv
@@ -24,3 +26,6 @@ param budgetContactEmail = 'bobur_yusupov@itpu.uz'
 param budgetStartDate = '2026-09-01'
 
 param deployAks = true
+
+// Registry database — enable for the integration test only.
+param deployPostgres = false

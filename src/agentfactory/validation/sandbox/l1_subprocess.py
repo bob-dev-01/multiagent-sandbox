@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import platform
+import signal
 import subprocess
 import sys
 import time
@@ -29,6 +30,7 @@ from .base import (
     SandboxRequest,
     SandboxUnavailableError,
     parse_harness_result,
+    require_attributable,
 )
 
 # Syscalls denied by the filter when seccomp is available. These are the ones an
@@ -202,12 +204,17 @@ class SubprocessRunner:
 
         # seccomp status comes back inside the harness report and is carried on
         # the trace itself, so no post-hoc annotation is needed here.
-        return parse_harness_result(
+        # RLIMIT_CPU is enforced with SIGXCPU: a spinning agent killed that way
+        # leaves no report, and it is the agent's doing. Memory is handled at
+        # the Python level under RLIMIT_AS — MemoryError is caught and reported.
+        cpu_killed = code is not None and code == -signal.SIGXCPU
+        trace = parse_harness_result(
             stdout,
             level=self.level,
             exit_code=code,
             wall_time_ms=elapsed_ms,
-            timed_out=timed_out,
+            timed_out=timed_out or cpu_killed,
             stderr=stderr,
             expected_output=request.expected_output,
         )
+        return require_attributable(trace, agent_caused=cpu_killed)
