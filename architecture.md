@@ -638,8 +638,9 @@ genuine.
    around a one-second poll.** Pod-status timestamps do not fix this: the API reports them to the
    second. The runner now watches the pod and stamps each state change on arrival
    (`milestones_ms`, with upper-bound-only milestones listed in `milestones_inexact`), and the
-   sandbox times its own start-up on its own clock (`sandbox_init_ms`). The instrument is in
-   place; the L2/L3 comparison has not yet been re-run with it.
+   sandbox times its own start-up on its own clock (`sandbox_init_ms`). Re-run with it (pilot 3,
+   n = 63 per level): gVisor adds **83.5 ms** to sandbox start-up (95% CI 79–90 ms, +44%), and the
+   end-to-end wall-clock difference is not significant. Details in the README.
 
 ### OQ-5 — Security-Latency Score is unit-dependent and has a singularity — Medium
 

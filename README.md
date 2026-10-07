@@ -241,12 +241,53 @@ What the valid numbers say:
   milestone only known as an upper bound (first seen when the watch opened, or reported in the
   same update as the next one) is listed in `milestones_inexact` rather than passed off as
   exact. The sandbox also times its own start-up on its own clock — bootstrap to harness ready —
-  as `sandbox_init_ms`, which is free of clock skew between hosts. **Not yet re-measured on the
-  cluster**: the numbers above are from the polling runner.
+  as `sandbox_init_ms`, which is free of clock skew between hosts.
 
 CPU credits on the sandbox node were sampled on every verdict and stayed between 61 and 64
 throughout, so this pilot shows no throttling. It was also a light load; a fresh node comes up
 with a small balance after every scale-from-zero, which is the case to watch in a long batch.
+
+### Pilot 3 — the watch-based instrument (2026-10-07)
+
+`runs/pilot3-watch`: all 30 agents × L2, L3 × 3 replicates, one test input, `strict` profile,
+same node pool and image as before. 126 sandbox runs, none refused as an infrastructure failure;
+every L2 run saw the host kernel and every L3 run `4.19.0-gvisor`. The run started from the
+working tree that became `79cef8d` (watch opened before apply); its log records the parent,
+`ac21d22`.
+
+Classification, per level over 90 cells: 45 PASS, 27 FAIL_UNSAFE, 18 FAIL_INCORRECT — exactly the
+corpus labels. FNR 0.000 (95% CI 0.000–0.066), FPR 0.000. The same caveat as above applies:
+every unsafe agent was stopped by static analysis, so FNR does not vary by level by construction.
+
+Timing, ms, n = 63 per level. The difference column is the L3 − L2 difference of medians with a
+bootstrap 95% CI and a Mann–Whitney p:
+
+| | L2 p50 | L3 p50 | L3 − L2 | 95% CI | p |
+|---|---|---|---|---|---|
+| `sandbox_init_ms` (in-sandbox, one clock) | 189.7 | 273.2 | **+83.5** | [79.1, 89.5] | < 10⁻¹⁵ |
+| apply → scheduled | — | — | +2.6 | [−0.9, 8.0] | 0.05 |
+| apply → terminated | 1415.6 | 1467.2 | +51.6 | [−10.6, 159.1] | 0.045 |
+| wall clock | 5281.8 | 5347.6 | +65.8 | [−68.8, 199.2] | 0.12 |
+| agent itself | 0.2 | 0.3 | — | — | — |
+
+What this says:
+
+- **gVisor's overhead is now measurable, and it is about 84 ms per sandbox start** — +44% on the
+  bootstrap-to-harness path, with a tight interval. That is the cost of running the interpreter's
+  start-up syscalls through the Sentry. The agent's own work is too short to show anything.
+- **It is a small fraction of the pod lifecycle.** End to end it is lost in the noise of
+  scheduling and container creation: the wall-clock difference is not significant, and both levels
+  sit at ~5.3 s, of which ~3.9 s is kubectl process start-up on the orchestrator (`apply` ~1.6 s,
+  log fetch ~2.2 s) — identical across levels and nothing to do with isolation.
+- **`running` is almost never seen on its own** (101 of 126 runs): the agent finishes before
+  kubelet's next status update, so it is reported together with `terminated` and flagged inexact.
+  `apply → terminated` is the exact end-to-end figure; `running → terminated` is not usable.
+- Wall time dropped from ~7 s to ~5.3 s against pilot 2 at both levels, mostly from removing the
+  one-second poll and its trailing sleep.
+
+Not established yet: whether 84 ms holds under load or on non-burstable hardware (credit sampling
+for the AKS scale set reported "unavailable" this time), and how it scales with an agent that does
+real I/O.
 
 ### seccomp
 
