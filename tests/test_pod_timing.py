@@ -165,6 +165,39 @@ def test_a_dropped_watch_is_reopened(monkeypatch, request_) -> None:
     assert "terminated" in trace.milestones_inexact
 
 
+def test_the_watch_is_open_before_the_pod_is_applied(monkeypatch, request_) -> None:
+    """kubectl takes ~1.6 s to start; a watch opened after apply missed the pod's run."""
+    order: list[str] = []
+    kubectl = FakeKubectl(harness_stdout())
+    runner = gvisor_pod_runner(kube_context="t")
+
+    def record_kubectl(*args, **kw):
+        order.append(args[0])
+        return kubectl(*args, **kw)
+
+    def record_watch(name):
+        order.append("watch")
+        return FakeWatch([(0.0, DONE)])
+
+    monkeypatch.setattr(runner, "_kubectl", record_kubectl)
+    monkeypatch.setattr(runner, "_open_watch", record_watch)
+    runner.run(request_)
+    assert order.index("watch") < order.index("apply")
+
+
+def test_a_failed_apply_closes_the_watch(monkeypatch, request_) -> None:
+    watch = FakeWatch([])
+    runner = gvisor_pod_runner(kube_context="t")
+    monkeypatch.setattr(
+        runner, "_kubectl",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 1, "", "denied"),
+    )
+    monkeypatch.setattr(runner, "_open_watch", lambda name: watch)
+    with pytest.raises(SandboxExecutionError, match="apply failed"):
+        runner.run(request_)
+    assert watch.closed
+
+
 # ------------------------------------------- instrument faults stay faults
 
 

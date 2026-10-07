@@ -288,14 +288,25 @@ class PodRunner:
         message = ""
         clock = _Milestones(started)
 
-        applied = self._kubectl("apply", "-f", "-", stdin=manifest, timeout=120)
+        # The watch opens before the pod exists. Starting kubectl costs ~1.6 s
+        # on the orchestrator, about as long as the pod takes to run, so a
+        # watch opened after apply mostly saw the pod already finished and
+        # could only mark its milestones inexact. Opened first, it is
+        # usually connected by the time apply's own kubectl gets the pod made.
+        watch = self._open_watch(name)
+        try:
+            applied = self._kubectl("apply", "-f", "-", stdin=manifest, timeout=120)
+        except BaseException:
+            watch.close()
+            raise
         if applied.returncode != 0:
+            watch.close()
             raise SandboxExecutionError(f"pod apply failed: {applied.stderr.strip()[:500]}")
         clock.mark("applied", time.perf_counter(), exact=True)
 
         try:
             deadline = time.monotonic() + limits.max_duration_sec + 120
-            for seen_at, pod, initial in self._pod_states(name, deadline):
+            for seen_at, pod, initial in self._pod_states(name, deadline, watch):
                 status = pod.get("status") or {}
                 for milestone, reached in _progress(status).items():
                     if reached:
@@ -371,13 +382,17 @@ class PodRunner:
         return trace
 
     def _open_watch(self, name: str) -> PodWatch:
+        # A field selector rather than `get pod <name>`: the named form exits
+        # with NotFound when the pod does not exist yet, which it does not
+        # when the watch is opened.
         cmd = self._base_cmd() + [
-            "-n", self.namespace, "get", "pod", name, "--watch", "-o", "json",
+            "-n", self.namespace, "get", "pods",
+            "--field-selector", f"metadata.name={name}", "--watch", "-o", "json",
         ]
         return KubectlPodWatch(cmd)
 
     def _pod_states(
-        self, name: str, deadline: float
+        self, name: str, deadline: float, watch: PodWatch
     ) -> Iterator[tuple[float, dict[str, Any], bool]]:
         """Every state the pod passes through, stamped when it arrived.
 
@@ -388,9 +403,12 @@ class PodRunner:
         is reopened a bounded number of times; the first object after a reopen
         is again an initial state. The generator ends without a terminal state
         once the deadline passes, which the caller reads as a timeout.
+
+        A watch opened before the pod existed delivers the new pod as its first
+        object, with no milestone reached, so the initial-state rule costs
+        nothing in the usual case and still holds when apply won the race.
         """
         reopened = 0
-        watch = self._open_watch(name)
         try:
             initial = True
             while (remaining := deadline - time.monotonic()) > 0:
