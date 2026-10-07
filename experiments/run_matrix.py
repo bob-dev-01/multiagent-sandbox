@@ -162,8 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--levels", default="L1", help="Comma-separated: L1,L2,L3")
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20260918)
-    parser.add_argument("--profile", default="balanced",
-                        choices=["permissive", "balanced", "paranoid"])
+    parser.add_argument("--profile", default="strict",
+                        choices=["permissive", "balanced", "strict", "paranoid"])
     parser.add_argument("--limit", type=int, default=0, help="Stop after N cells (smoke test).")
     parser.add_argument("--resume", action="store_true", help="Skip cells already in the log.")
     parser.add_argument("--no-bandit", action="store_true")

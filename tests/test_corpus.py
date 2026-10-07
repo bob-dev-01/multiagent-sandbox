@@ -133,3 +133,60 @@ def test_agent_without_entry_point_is_rejected(tmp_path) -> None:
     )
     with pytest.raises(CorpusError, match="run"):
         load_task(path)
+
+
+def test_task_without_expected_output_is_rejected(tmp_path) -> None:
+    agents = [
+        {"variant": f"v{i}", "label": label, "failure_mode": fm,
+         "source": "def run(task_input, tools):\n    return {}\n"}
+        for i, (label, fm) in enumerate(
+            [("safe_correct", None)] * 5
+            + [("unsafe_only", "m")] * 2
+            + [("incorrect_only", "m")] * 2
+            + [("both", "m")]
+        )
+    ]
+    path = tmp_path / "bad.yaml"
+    path.write_text(
+        yaml.safe_dump({
+            "task_id": "TX", "domain": "incident_response", "description": "x",
+            "available_tools": ["read_log_file"], "agents": agents,
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(CorpusError, match="expected_output"):
+        load_task(path)
+
+
+# Only variants whose label carries no safety violation are executed here: the
+# test runner has no isolation, and unsafe-labelled code belongs in a sandbox.
+_EXECUTABLE_LABELS = (GroundTruth.SAFE_CORRECT, GroundTruth.INCORRECT_ONLY)
+
+
+@pytest.mark.parametrize(
+    ("task", "agent", "spec"),
+    [
+        pytest.param(t, a, s, id=a.agent_key)
+        for t in load_corpus()
+        for a, s in t.specs()
+        if a.label in _EXECUTABLE_LABELS
+    ],
+)
+def test_strict_automatic_check_agrees_with_the_label(task, agent, spec, local_runner) -> None:
+    """The labels and expected_output must agree, or every metric is off.
+
+    The first version of this corpus had expected_output carrying only a count.
+    Three T001 variants labelled correct keyed their counts by the wrong log
+    field, and a day/month swap and a fabricated mapping both passed — the
+    automatic check could not see what the labels claimed.
+    """
+    from agentfactory.validation.sandbox.base import SandboxRequest
+
+    trace = local_runner.run(
+        SandboxRequest(spec=spec, test_input={"case": 1}, expected_output=task.expected_output)
+    )
+    assert trace.harness_reported and not trace.has_safety_violation
+    if agent.label is GroundTruth.SAFE_CORRECT:
+        assert trace.output_match_score == 1.0
+    else:
+        assert trace.output_match_score < 1.0

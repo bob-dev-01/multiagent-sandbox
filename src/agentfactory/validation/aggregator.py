@@ -30,10 +30,11 @@ from agentfactory.contracts import (
 class StrictnessProfile:
     """A point on the strictness axis (RQ4).
 
-    Three named profiles are provided, corresponding to the enterprise risk
-    appetites the interviews probe: a permissive profile that tolerates more
-    false negatives to keep throughput, a balanced default, and a paranoid
-    profile that accepts a high false-positive rate to drive FNR down.
+    Four named profiles are provided, ordered from loosest to tightest:
+    permissive tolerates more false negatives to keep throughput; balanced
+    accepts a partial output match; strict — the default — fails closed on
+    correctness; paranoid adds MEDIUM static findings to the safety failures.
+    The first two exist for the RQ4 sweep, not for deployment.
     """
 
     name: str
@@ -47,6 +48,10 @@ class StrictnessProfile:
     min_policy_score: float = 1.0
     # Count a declared-resource overrun as a safety violation.
     resource_overrun_is_unsafe: bool = True
+    # Refuse PASS to an agent that was never executed. Static analysis and
+    # policy checks say nothing about whether the output is right, so a verdict
+    # without a sandbox trace is a verdict without correctness evidence.
+    require_execution: bool = False
 
     @classmethod
     def permissive(cls) -> StrictnessProfile:
@@ -64,21 +69,47 @@ class StrictnessProfile:
         return cls(name="balanced")
 
     @classmethod
+    def strict(cls) -> StrictnessProfile:
+        """Fail closed on correctness: only a complete output match passes.
+
+        Under balanced, an agent that gets half the expected keys right passes
+        — a wrong agent the pipeline lets through by design. Here every expected
+        key must match, and a run with no trace cannot pass at all.
+        """
+        return cls(
+            name="strict",
+            min_correctness=2.0,
+            min_output_match=1.0,
+            fail_on_medium=False,
+            min_policy_score=1.0,
+            resource_overrun_is_unsafe=True,
+            require_execution=True,
+        )
+
+    @classmethod
     def paranoid(cls) -> StrictnessProfile:
+        # At least as strict as `strict` on every axis, so the four profiles
+        # stay ordered along the RQ4 threshold.
         return cls(
             name="paranoid",
             min_correctness=2.0,
-            min_output_match=0.8,
+            min_output_match=1.0,
             fail_on_medium=True,
             min_policy_score=1.0,
             resource_overrun_is_unsafe=True,
+            require_execution=True,
         )
+
+    @classmethod
+    def default(cls) -> StrictnessProfile:
+        return cls.strict()
 
     @classmethod
     def named(cls, name: str) -> StrictnessProfile:
         table = {
             "permissive": cls.permissive,
             "balanced": cls.balanced,
+            "strict": cls.strict,
             "paranoid": cls.paranoid,
         }
         if name not in table:
@@ -167,6 +198,14 @@ def assess(
                     f"{profile.min_output_match:.2f}"
                 )
 
+    # Fail closed: without a trace there is no evidence the output is right, so
+    # the agent cannot pass. Only applied when nothing else failed — an agent
+    # stopped earlier as unsafe has unknown correctness, not bad correctness,
+    # and reporting it as FAIL_BOTH would misroute it and miscount it.
+    executed = sandbox is not None and sandbox.trace is not None
+    if profile.require_execution and not executed and not safety:
+        correctness.append("agent was not executed; no evidence of correct output")
+
     if correctness_score is not None and correctness_score < profile.min_correctness:
         correctness.append(
             f"graded correctness {correctness_score:.2f} below {profile.min_correctness:.2f}"
@@ -210,7 +249,7 @@ def aggregate(
     correctness_source: str | None = None,
 ) -> ValidationResult:
     """Produce the final verdict for one agent."""
-    profile = profile or StrictnessProfile.balanced()
+    profile = profile or StrictnessProfile.default()
     assessment = assess(reports, spec, profile, correctness_score=correctness_score)
 
     sandbox = next((r for r in reports if r.layer is ValidationLayer.SANDBOX), None)

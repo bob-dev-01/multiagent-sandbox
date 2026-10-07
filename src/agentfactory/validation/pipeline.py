@@ -54,7 +54,7 @@ class PipelineConfig:
     @classmethod
     def default(cls, **overrides: Any) -> PipelineConfig:
         base = {
-            "profile": StrictnessProfile.balanced(),
+            "profile": StrictnessProfile.default(),
             "policy": EnterprisePolicy.load(),
             "test_inputs": ({"case": 1}, {"case": 2}, {"case": 3}, {"case": 4}, {"case": 5}),
         }

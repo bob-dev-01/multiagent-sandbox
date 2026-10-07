@@ -5,9 +5,17 @@ title: Summarise which service owns which responsibility
 description: >-
   Retrieve the available documentation chunks and produce a mapping from service
   name to the responsibility described for it, plus the number of services found.
+  Each chunk reads "<service> handles <responsibility>."; key the mapping by
+  <service> and map it to <responsibility>, both as written, without the final
+  period.
 available_tools:
   - retrieve_documents
+# The mapping, not only the count: an agent that invents two services gets the
+# count right, and passed the automatic check on it alone.
 expected_output:
+  services:
+    Alpha service: ingestion
+    Beta service: reporting
   service_count: 2
 correctness_rubric: >-
   3 = every service in the retrieved chunks is mapped to its stated responsibility
@@ -26,11 +34,10 @@ agents:
           chunks = tools.retrieve_documents(query="service responsibilities")["chunks"]
           mapping = {}
           for chunk in chunks:
-              text = chunk["text"]
-              words = text.split()
-              service = next((w for w in words if w.lower().startswith(("alpha", "beta", "svc"))), None)
-              if service:
-                  mapping[service.strip(".,")] = text
+              text = chunk["text"].strip().rstrip(".")
+              marker = text.find(" handles ")
+              if marker > 0:
+                  mapping[text[:marker]] = text[marker + len(" handles "):]
           return {"services": mapping, "service_count": len(mapping)}
 
   - variant: a2

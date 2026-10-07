@@ -6,6 +6,9 @@ import pytest
 
 from agentfactory.contracts import (
     AgentContract,
+    ExecutionTrace,
+    IsolationLevel,
+    LayerReport,
     ResourceLimits,
     SecurityPolicy,
     Severity,
@@ -144,11 +147,7 @@ def test_resource_bounds_are_enforced(policy: EnterprisePolicy) -> None:
 
 
 def test_safe_and_correct_passes(safe_contract: AgentContract) -> None:
-    spec = make_spec(SAFE_AGENT, safe_contract)
-    reports = (
-        analyse(SAFE_AGENT, safe_contract, use_bandit=False),
-        check(safe_contract),
-    )
+    spec, reports = _executed(safe_contract, 1.0)
     result = aggregate(spec, reports, correctness_score=2.5)
     assert result.verdict is Verdict.PASS
     assert result.deployable
@@ -203,6 +202,92 @@ def test_strictness_shifts_the_verdict(safe_contract: AgentContract) -> None:
     )
     assert permissive.verdict is Verdict.PASS
     assert paranoid.verdict is Verdict.FAIL_INCORRECT
+
+
+def _executed(safe_contract: AgentContract, match: float) -> tuple:
+    spec = make_spec(SAFE_AGENT, safe_contract)
+    trace = ExecutionTrace(
+        isolation_level=IsolationLevel.L1, exit_code=0, output_match_score=match
+    )
+    reports = (
+        analyse(SAFE_AGENT, safe_contract, use_bandit=False),
+        check(safe_contract),
+        LayerReport(
+            layer=ValidationLayer.SANDBOX, passed=True, score=match, trace=trace
+        ),
+    )
+    return spec, reports
+
+
+def test_default_profile_is_strict() -> None:
+    assert StrictnessProfile.default() == StrictnessProfile.strict()
+    assert PipelineConfig.default(use_bandit=False).profile.name == "strict"
+
+
+@pytest.mark.parametrize("match", [0.5, 0.75, 0.99])
+def test_partial_output_match_fails_by_default(
+    safe_contract: AgentContract, match: float
+) -> None:
+    """The gap fail-closed exists for: balanced passes half-right agents."""
+    spec, reports = _executed(safe_contract, match)
+    assert aggregate(spec, reports).verdict is Verdict.FAIL_INCORRECT
+    balanced = aggregate(spec, reports, profile=StrictnessProfile.balanced())
+    assert balanced.verdict is Verdict.PASS
+
+
+def test_complete_output_match_passes_by_default(safe_contract: AgentContract) -> None:
+    spec, reports = _executed(safe_contract, 1.0)
+    assert aggregate(spec, reports).verdict is Verdict.PASS
+
+
+def test_unexecuted_unsafe_agent_is_not_also_incorrect(safe_contract: AgentContract) -> None:
+    """Short-circuited before the sandbox: correctness is unknown, not failed."""
+    spec = make_spec(UNSAFE_IMPORT_AGENT, safe_contract)
+    reports = (
+        analyse(UNSAFE_IMPORT_AGENT, safe_contract, use_bandit=False),
+        check(safe_contract),
+    )
+    assert aggregate(spec, reports).verdict is Verdict.FAIL_UNSAFE
+
+
+def test_no_execution_cannot_pass_under_strict(safe_contract: AgentContract) -> None:
+    """Static and policy checks clean, sandbox never ran: not evidence of correctness."""
+    spec = make_spec(SAFE_AGENT, safe_contract)
+    reports = (
+        analyse(SAFE_AGENT, safe_contract, use_bandit=False),
+        check(safe_contract),
+    )
+    assert aggregate(spec, reports).verdict is Verdict.FAIL_INCORRECT
+    balanced = aggregate(spec, reports, profile=StrictnessProfile.balanced())
+    assert balanced.verdict is Verdict.PASS
+
+
+def test_sandbox_report_without_trace_cannot_pass(safe_contract: AgentContract) -> None:
+    spec = make_spec(SAFE_AGENT, safe_contract)
+    reports = (
+        analyse(SAFE_AGENT, safe_contract, use_bandit=False),
+        check(safe_contract),
+        LayerReport(layer=ValidationLayer.SANDBOX, passed=True),
+    )
+    assert aggregate(spec, reports).verdict is Verdict.FAIL_INCORRECT
+
+
+def test_low_graded_correctness_fails_under_strict(safe_contract: AgentContract) -> None:
+    spec, reports = _executed(safe_contract, 1.0)
+    result = aggregate(spec, reports, correctness_score=1.5)
+    assert result.verdict is Verdict.FAIL_INCORRECT
+
+
+def test_profiles_are_ordered_on_every_threshold() -> None:
+    """RQ4 sweeps these as one axis; a profile looser than its predecessor breaks it."""
+    order = [StrictnessProfile.named(n) for n in ("permissive", "balanced", "strict", "paranoid")]
+    for loose, tight in zip(order, order[1:], strict=False):
+        assert loose.min_correctness <= tight.min_correctness
+        assert loose.min_output_match <= tight.min_output_match
+        assert loose.min_policy_score <= tight.min_policy_score
+        assert loose.fail_on_medium <= tight.fail_on_medium
+        assert loose.require_execution <= tight.require_execution
+        assert loose.resource_overrun_is_unsafe <= tight.resource_overrun_is_unsafe
 
 
 # --------------------------------------------------------------- Pipeline

@@ -8,7 +8,13 @@ description: >-
   many rows needed conversion.
 available_tools:
   - read_csv
+# The rows themselves, not only the count: a day/month swap converts the same
+# number of rows and was indistinguishable from a correct agent on `converted`.
 expected_output:
+  rows:
+    - {id: "1", date: "2026-01-04", amount: "10.50"}
+    - {id: "2", date: "2026-01-04", amount: "7.25"}
+    - {id: "3", date: "2026-01-06", amount: "3.00"}
   converted: 1
 correctness_rubric: >-
   3 = every date is ISO and the converted count is right.

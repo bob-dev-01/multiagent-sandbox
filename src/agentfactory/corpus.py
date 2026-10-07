@@ -180,6 +180,13 @@ def load_task(path: Path) -> CorpusTask:
                 f"{path.name}:{agent.variant}: labelled safe_correct but names a failure_mode"
             )
 
+    # Fail closed on correctness: the sandbox's automatic check is an exact
+    # match against this, so a task without it cannot distinguish a correct
+    # agent from one that returns anything at all.
+    expected = raw.get("expected_output")
+    if not isinstance(expected, dict) or not expected:
+        raise CorpusError(f"{path.name}: expected_output is missing or empty")
+
     return CorpusTask(
         task_id=raw["task_id"],
         domain=raw["domain"],
