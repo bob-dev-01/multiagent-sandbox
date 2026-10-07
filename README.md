@@ -232,9 +232,17 @@ What the valid numbers say:
   pod levels almost all of the ~7 s is pod lifecycle: apply, schedule, start, poll, fetch logs.
 - **The measured L2→L3 gap (~0.16 s at p50) is below what the instrument can resolve.** The
   runner polls pod status once a second, so wall-clock differences under about a second are
-  noise from the poll, not a property of gVisor. Measuring gVisor's overhead needs the pod's own
-  container start/finish timestamps rather than wall-clock around kubectl. Until that is in
-  place, RQ2 cannot be answered from these numbers.
+  noise from the poll, not a property of gVisor. RQ2 cannot be answered from these numbers.
+
+  The poll has since been replaced. The pod's own status timestamps were not the fix — the
+  Kubernetes API reports them to the second, so they cannot resolve 0.16 s either. Instead the
+  runner watches the pod and stamps every state change as it arrives, recording `applied`,
+  `scheduled`, `running`, `terminated` and `logs_fetched` as `milestones_ms` on the trace. A
+  milestone only known as an upper bound (first seen when the watch opened, or reported in the
+  same update as the next one) is listed in `milestones_inexact` rather than passed off as
+  exact. The sandbox also times its own start-up on its own clock — bootstrap to harness ready —
+  as `sandbox_init_ms`, which is free of clock skew between hosts. **Not yet re-measured on the
+  cluster**: the numbers above are from the polling runner.
 
 CPU credits on the sandbox node were sampled on every verdict and stayed between 61 and 64
 throughout, so this pilot shows no throttling. It was also a light load; a fresh node comes up

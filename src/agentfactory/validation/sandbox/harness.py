@@ -31,6 +31,9 @@ from typing import Any
 
 SENTINEL = "__AGENTFACTORY_RESULT__"
 
+# As early as the harness can take it: the end of the sandbox's start-up path.
+_HARNESS_STARTED_EPOCH = time.time()
+
 # Paths the agent may read. Anything else is recorded as a violation.
 ALLOWED_READ_PREFIXES: tuple[str, ...] = ("/workspace", "/tmp/agent", "./data")
 
@@ -317,10 +320,26 @@ def main() -> int:
         # Which kernel the agent actually ran against — the evidence for the
         # isolation level, independent of how the sandbox was configured.
         "kernel_release": platform.release(),
+        "sandbox_init_ms": _sandbox_init_ms(),
     }
     sys.stdout.write(SENTINEL + json.dumps(report, default=str) + "\n")
     sys.stdout.flush()
     return 0
+
+
+def _sandbox_init_ms() -> float | None:
+    """Bootstrap start to harness start, when a bootstrap stamped its start.
+
+    Both ends are read from this sandbox's clock, so the difference carries no
+    skew between the sandbox host and the orchestrator.
+    """
+    boot = os.environ.get("AGENTFACTORY_BOOT_EPOCH")
+    if not boot:
+        return None
+    try:
+        return max(0.0, (_HARNESS_STARTED_EPOCH - float(boot)) * 1000)
+    except ValueError:
+        return None
 
 
 def _json_safe(value: Any) -> bool:

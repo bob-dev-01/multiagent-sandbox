@@ -21,7 +21,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-SCHEMA_VERSION = "1.3.0"
+SCHEMA_VERSION = "1.4.0"
 
 # Hard ceilings. A contract may declare less than these; it may never declare more.
 # The sandbox is configured *from* the contract (see OQ-15 in architecture.md), so
@@ -270,6 +270,22 @@ class ExecutionTrace(BaseModel):
     # "OOMKilled", "StartError"). The only way to tell an agent that exhausted
     # its memory from a container that could not be created.
     terminated_reason: str | None = None
+    # Lifecycle milestones, in ms from the moment the runner started — the same
+    # origin as wall_time_ms. Keys, where the runner can see them: "applied",
+    # "scheduled", "running", "terminated", "logs_fetched". Each is the arrival
+    # time of the first watch event showing that state, so the resolution is
+    # the API server's propagation delay rather than a polling interval: the
+    # one-second poll this replaced could not resolve the ~0.16 s L2/L3 gap.
+    milestones_ms: dict[str, float] = Field(default_factory=dict)
+    # Milestones whose time is an upper bound only: first seen in a watch's
+    # initial state (the transition happened before the watch began), or never
+    # seen on its own (kubelet reported running and terminated in one update).
+    milestones_inexact: tuple[str, ...] = ()
+    # Bootstrap start to harness ready, timed inside the sandbox on one clock:
+    # writing the job, exec'ing the interpreter and importing the harness under
+    # the level's runtime. Free of cross-host clock skew, and where per-syscall
+    # overhead of a userspace kernel shows up.
+    sandbox_init_ms: Annotated[float, Field(ge=0)] | None = None
 
     @property
     def has_safety_violation(self) -> bool:

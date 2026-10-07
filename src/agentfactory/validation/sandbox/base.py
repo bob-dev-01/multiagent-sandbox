@@ -127,6 +127,8 @@ def parse_harness_result(
     expected_output: dict[str, Any] | None = None,
     extra_syscalls: tuple[str, ...] = (),
     terminated_reason: str | None = None,
+    milestones_ms: dict[str, float] | None = None,
+    milestones_inexact: tuple[str, ...] = (),
 ) -> ExecutionTrace:
     """Turn the harness's JSON report into an ExecutionTrace.
 
@@ -165,6 +167,9 @@ def parse_harness_result(
         kernel_release=report.get("kernel_release"),
         harness_reported=found,
         terminated_reason=terminated_reason,
+        milestones_ms=dict(milestones_ms or {}),
+        milestones_inexact=milestones_inexact,
+        sandbox_init_ms=report.get("sandbox_init_ms"),
     )
 
 

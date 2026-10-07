@@ -36,13 +36,18 @@ a gap in that coverage from becoming bad data.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
+import queue
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
 import uuid
-from typing import Any
+from collections.abc import Iterator
+from typing import Any, Protocol
 
 import yaml
 
@@ -169,7 +174,10 @@ class PodRunner:
         job_b64 = base64.b64encode(request.payload().encode("utf-8")).decode()
 
         bootstrap = (
-            "import base64,os,sys;"
+            # Stamped first, so the harness can report how long the sandbox
+            # took to get from here to running it (sandbox_init_ms).
+            "import time,os;os.environ['AGENTFACTORY_BOOT_EPOCH']=repr(time.time());"
+            "import base64,sys;"
             f"open('/tmp/h.py','wb').write(base64.b64decode('{harness_b64}'));"
             f"open('/tmp/job.json','wb').write(base64.b64decode('{job_b64}'));"
             "os.makedirs('/tmp/agent',exist_ok=True);"
@@ -278,29 +286,25 @@ class PodRunner:
         exit_code: int | None = None
         reason: str | None = None
         message = ""
+        clock = _Milestones(started)
 
         applied = self._kubectl("apply", "-f", "-", stdin=manifest, timeout=120)
         if applied.returncode != 0:
             raise SandboxExecutionError(f"pod apply failed: {applied.stderr.strip()[:500]}")
+        clock.mark("applied", time.perf_counter(), exact=True)
 
         try:
             deadline = time.monotonic() + limits.max_duration_sec + 120
-            while time.monotonic() < deadline:
-                got = self._kubectl("get", "pod", name, "-o", "json", timeout=60)
-                if got.returncode != 0:
-                    time.sleep(1)
-                    continue
-                try:
-                    pod = json.loads(got.stdout)
-                except json.JSONDecodeError:
-                    time.sleep(1)
-                    continue
-                status = pod.get("status", {})
-                phase = status.get("phase", "Pending")
-                if phase in {"Succeeded", "Failed"}:
+            for seen_at, pod, initial in self._pod_states(name, deadline):
+                status = pod.get("status") or {}
+                for milestone, reached in _progress(status).items():
+                    if reached:
+                        clock.mark(milestone, seen_at, exact=not initial)
+
+                if status.get("phase") in {"Succeeded", "Failed"}:
                     statuses = status.get("containerStatuses") or []
                     if statuses:
-                        terminated = statuses[0].get("state", {}).get("terminated") or {}
+                        terminated = (statuses[0].get("state") or {}).get("terminated") or {}
                         exit_code = terminated.get("exitCode")
                         reason = terminated.get("reason")
                         message = terminated.get("message") or ""
@@ -318,12 +322,29 @@ class PodRunner:
                         message = waiting.get("message") or ""
                 if reason in PLATFORM_START_FAILURES:
                     break
-                time.sleep(1)
             else:
+                # The watch ran out the clock. Confirm against the API server
+                # before blaming the agent: a watch that stalled while the pod
+                # finished would otherwise record an infrastructure fault as
+                # the agent exceeding its time.
+                got = self._kubectl("get", "pod", name, "-o", "json", timeout=60)
+                try:
+                    phase = (json.loads(got.stdout).get("status") or {}).get("phase")
+                except json.JSONDecodeError:
+                    phase = None
+                if got.returncode != 0 or phase is None:
+                    raise SandboxExecutionError(
+                        f"pod {name} state unknown after the deadline: {got.stderr.strip()[:300]}"
+                    )
+                if phase in {"Succeeded", "Failed"}:
+                    raise SandboxExecutionError(
+                        f"pod {name} finished ({phase}) but the watch never reported it"
+                    )
                 timed_out = True
 
             logs = self._kubectl("logs", name, "--tail", "-1", timeout=120)
             stdout, stderr = logs.stdout, logs.stderr
+            clock.mark("logs_fetched", time.perf_counter(), exact=True)
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000
             self._kubectl("delete", "pod", name, "--ignore-not-found", "--now", timeout=120)
@@ -342,10 +363,191 @@ class PodRunner:
             stderr=stderr,
             expected_output=request.expected_output,
             terminated_reason=reason,
+            milestones_ms=clock.ms,
+            milestones_inexact=clock.inexact,
         )
         trace = require_attributable(trace, agent_caused=reason == "OOMKilled")
         self._verify_kernel(trace)
         return trace
+
+    def _open_watch(self, name: str) -> PodWatch:
+        cmd = self._base_cmd() + [
+            "-n", self.namespace, "get", "pod", name, "--watch", "-o", "json",
+        ]
+        return KubectlPodWatch(cmd)
+
+    def _pod_states(
+        self, name: str, deadline: float
+    ) -> Iterator[tuple[float, dict[str, Any], bool]]:
+        """Every state the pod passes through, stamped when it arrived.
+
+        Yields (perf_counter at arrival, pod object, whether it was the watch's
+        initial state). An initial state shows where the pod already was, not
+        when it got there, so milestones first seen in one are marked inexact.
+        The API server closes long watches and connections drop, so the watch
+        is reopened a bounded number of times; the first object after a reopen
+        is again an initial state. The generator ends without a terminal state
+        once the deadline passes, which the caller reads as a timeout.
+        """
+        reopened = 0
+        watch = self._open_watch(name)
+        try:
+            initial = True
+            while (remaining := deadline - time.monotonic()) > 0:
+                try:
+                    item = watch.next(timeout=min(remaining, 5.0))
+                except queue.Empty:
+                    continue
+                if item is None:
+                    reopened += 1
+                    if reopened > MAX_WATCH_REOPENS:
+                        raise SandboxExecutionError(
+                            f"pod watch for {name} ended {reopened} times: "
+                            f"{watch.error()[:300]}"
+                        )
+                    watch.close()
+                    watch = self._open_watch(name)
+                    initial = True
+                    continue
+                seen_at, pod = item
+                yield seen_at, pod, initial
+                initial = False
+        finally:
+            watch.close()
+
+
+# A watch that keeps ending is a cluster or credential problem, not a slow pod.
+MAX_WATCH_REOPENS = 5
+
+
+def _progress(status: dict[str, Any]) -> dict[str, bool]:
+    """Which lifecycle milestones a pod status shows as reached."""
+    conditions = {c.get("type"): c.get("status") for c in status.get("conditions") or []}
+    states = [cs.get("state") or {} for cs in status.get("containerStatuses") or []]
+    terminated = status.get("phase") in {"Succeeded", "Failed"} or any(
+        "terminated" in st for st in states
+    )
+    running = terminated or any("running" in st for st in states)
+    return {
+        "scheduled": running or conditions.get("PodScheduled") == "True",
+        "running": running,
+        "terminated": terminated,
+    }
+
+
+class _Milestones:
+    """First-observation times, in ms from the runner's start."""
+
+    def __init__(self, origin: float) -> None:
+        self.origin = origin
+        self.ms: dict[str, float] = {}
+        self._first_seen_initial: set[str] = set()
+
+    def mark(self, name: str, at: float, *, exact: bool) -> None:
+        if name in self.ms:
+            return
+        self.ms[name] = round((at - self.origin) * 1000, 3)
+        if not exact:
+            self._first_seen_initial.add(name)
+
+    @property
+    def inexact(self) -> tuple[str, ...]:
+        # A milestone first seen in the same update as the next one was never
+        # observed on its own — kubelet reported running and terminated
+        # together, say — so its time is really the later milestone's.
+        collapsed = {
+            m for m, later in (("scheduled", "running"), ("running", "terminated"))
+            if m in self.ms and self.ms[m] == self.ms.get(later)
+        }
+        return tuple(sorted(self._first_seen_initial | collapsed))
+
+
+class PodWatch(Protocol):
+    def next(self, timeout: float) -> tuple[float, dict[str, Any]] | None: ...
+    def error(self) -> str: ...
+    def close(self) -> None: ...
+
+
+class KubectlPodWatch:
+    """`kubectl get pod --watch -o json`, each object stamped on arrival.
+
+    kubectl prints one pretty-printed JSON object per change with nothing
+    between them, so the stream is split by decoding rather than by line. A
+    reader thread decodes and stamps each object with perf_counter the moment
+    it is complete; that stamp is what the milestones are built from. `next`
+    raises queue.Empty on timeout and returns None once the stream has ended.
+    """
+
+    def __init__(self, cmd: list[str]) -> None:
+        # Owned for the watch's lifetime and closed in close().
+        self._stderr = tempfile.TemporaryFile()  # noqa: SIM115
+        self._proc = subprocess.Popen(
+            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=self._stderr
+        )
+        self._items: queue.Queue[tuple[float, dict[str, Any]] | None] = queue.Queue()
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
+
+    def _read(self) -> None:
+        stream = self._proc.stdout
+        assert stream is not None
+        decoder = JsonStreamDecoder()
+        try:
+            while chunk := stream.read1(65536):  # type: ignore[attr-defined]
+                for obj in decoder.feed(chunk):
+                    self._items.put((time.perf_counter(), obj))
+        finally:
+            self._items.put(None)
+
+    def next(self, timeout: float) -> tuple[float, dict[str, Any]] | None:
+        return self._items.get(timeout=timeout)
+
+    def error(self) -> str:
+        try:
+            self._stderr.seek(0)
+            return self._stderr.read().decode("utf-8", "replace").strip()
+        except (OSError, ValueError):
+            return ""
+
+    def close(self) -> None:
+        if self._proc.poll() is None:
+            self._proc.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            self._proc.wait(timeout=10)
+        self._stderr.close()
+
+
+class JsonStreamDecoder:
+    """Split a byte stream of concatenated JSON objects into objects."""
+
+    def __init__(self) -> None:
+        self._pending = b""
+        self._text = ""
+        self._decoder = json.JSONDecoder()
+
+    def feed(self, chunk: bytes) -> list[Any]:
+        data = self._pending + chunk
+        # Hold back a UTF-8 sequence split across the chunk boundary.
+        try:
+            self._text += data.decode("utf-8")
+            self._pending = b""
+        except UnicodeDecodeError as exc:
+            if exc.reason != "unexpected end of data":
+                raise
+            self._text += data[: exc.start].decode("utf-8")
+            self._pending = data[exc.start :]
+
+        out: list[Any] = []
+        while text := self._text.lstrip():
+            try:
+                obj, end = self._decoder.raw_decode(text)
+            except json.JSONDecodeError:
+                self._text = text  # incomplete; wait for the rest
+                return out
+            out.append(obj)
+            self._text = text[end:]
+        self._text = ""
+        return out
 
 
 def runc_pod_runner(**kwargs: Any) -> PodRunner:

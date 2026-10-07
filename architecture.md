@@ -635,8 +635,11 @@ genuine.
    per-level budgets in §3.2 were written as if isolation were the dominant cost. It is not.
 3. The observed L2→L3 gap (~0.16 s) is smaller than the runner's one-second status poll, so the
    present instrument cannot resolve gVisor's overhead. **RQ2 is not answerable from wall-clock
-   around kubectl.** It needs container-level start and finish timestamps from the pod status —
-   an instrumentation change, open at the time of writing.
+   around a one-second poll.** Pod-status timestamps do not fix this: the API reports them to the
+   second. The runner now watches the pod and stamps each state change on arrival
+   (`milestones_ms`, with upper-bound-only milestones listed in `milestones_inexact`), and the
+   sandbox times its own start-up on its own clock (`sandbox_init_ms`). The instrument is in
+   place; the L2/L3 comparison has not yet been re-run with it.
 
 ### OQ-5 — Security-Latency Score is unit-dependent and has a singularity — Medium
 
