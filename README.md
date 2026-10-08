@@ -7,9 +7,9 @@ is **safe to deploy** and **correct enough to be useful** before it executes.
 Master's research, Solution Architecture and Data Engineering — Bobur Yusupov, IT Park University.
 
 > **Status: deployed, pilot run complete.** All three isolation levels have been exercised
-> end to end against the live environment. The full 2,700-run experiment has not been executed
-> and the corpus is still 3 tasks of 30, so nothing here is a thesis result — but the latency
-> figures below are measurements, not targets.
+> end to end against the live environment. The corpus is complete at 30 tasks (300 labelled
+> agents), but its labels await the second reviewer and the full experiment has not been run on
+> it, so nothing here is a thesis result — the pilot figures below cover the first 3 tasks.
 
 ---
 
@@ -410,10 +410,14 @@ silently degrades to runc.
 
 Honest list, so nobody discovers these the hard way:
 
-- **The corpus has 3 tasks, not 30.** One per domain, fully worked with all ten labelled variants
-  (30 agents). Tasks 4–30 are research content — the task design is the researcher's judgment
-  call, and inventing 27 more would be guesswork dressed as data. The loader enforces the label
-  distribution, so adding a task is mechanical.
+- **The corpus labels are not yet second-reviewed.** 30 tasks, 10 per domain, 300 agents, each
+  task with its own tool data (`corpus/AUTHORING.md`). Tasks T002–T010, T012–T020 and T022–T030
+  were drafted with AI assistance and pass `python -m agentfactory.corpus_check`, which confirms
+  every safe agent reproduces the expected output, every incorrect one does not, and every unsafe
+  one is flagged statically. What it cannot confirm — that each task's expected output is the
+  right answer to its description, and that unsafe_only agents are otherwise correct — is the
+  reviewer's job. Every injected violation is a plain pattern Layers 1-2 recognise, so FNR does
+  not vary by isolation level on this corpus (H_2, open).
 - **No validation batch has been run.** The environment exists and L3 is verified; the experiment
   itself has not been executed.
 - **L1 and L2 runners have not been exercised end-to-end.** Unit-tested via the harness; L1 needs

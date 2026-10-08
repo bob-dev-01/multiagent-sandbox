@@ -135,7 +135,17 @@ def test_cold_outcomes_follow_the_routing_rules(result) -> None:
         Outcome.ESCALATED_UNSAFE.value,
         Outcome.ESCALATED_EXHAUSTED.value,
     }
-    assert {r.outcome for r in result.records if r.phase == COLD} <= allowed
+    high_risk = {t.task_id for t in TASKS if t.risk_tier == "high"}
+    cold = [r for r in result.records if r.phase == COLD]
+    assert {r.outcome for r in cold if r.task_id not in high_risk} <= allowed
+    # No L3 runner is configured here, so a high-risk task that reaches
+    # deployment must be refused at the gate, never run somewhere weaker.
+    for row in cold:
+        if row.task_id in high_risk:
+            assert row.outcome in allowed - {Outcome.GENERATED_AND_DEPLOYED.value} | {
+                Outcome.DEPLOYMENT_REFUSED.value
+            }, row
+            assert not row.executed_labels, row
 
 
 def test_summary_serialises(result) -> None:
