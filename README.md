@@ -330,6 +330,41 @@ Verified at the kernel level rather than assumed: with the filter installed, `so
 `EPERM` from the kernel, not from the harness's own monkeypatch. All 21 L1 sandbox runs report
 `seccomp_active: true`.
 
+### Integration test 1 (2026-10-08)
+
+`runs/integ1-l2`, commit `9b1c178`: corpus-replay generator, L2 for validation and execution
+(L3 configured for high-risk tasks; the corpus has none), strict profile, all-MiniLM-L6-v2,
+10 seeds. Per seed, 3 cold submissions and 6 warm (2 paraphrases per task). No infrastructure
+failures.
+
+| | Cold pass (n = 30) | Warm pass (n = 60) |
+|---|---|---|
+| TSR | 0.600 [0.423, 0.754] | 0.750 [0.628, 0.842] |
+| ARR | — | 0.400 [0.270, 0.545] |
+| Escalated | 0.400 | 0.250 |
+| Mean time to deploy | 7.5 s | 5.0 s (reuse: 0.05 s; fresh: 8.3 s) |
+
+Across both passes: FNR 0.000, **UDR 0.000** [0.000, 0.125] over 27 unsafe agents, **CER 0.000**
+[0.000, 0.043] over 85 validated agents, FPR 0.000. All 63 executions were of agents labelled
+safe_correct; the deployment gate refused nothing.
+
+What this says, and what it does not:
+
+- **Reuse is decided entirely by the wording of the paraphrase.** Where the cold pass had
+  registered an agent, the close paraphrase (cosine 0.88–0.92 to the original) was reused 18 of 18
+  times and the free one (0.68–0.84) 0 of 18. τ = 0.85 sits between the two. This is the OQ-8
+  point measured: on identical text ARR would have been ~1.0; on rewording it depends on how far
+  the rewording goes, and a rewording a person would call the same task can fall under τ.
+- **Escalations are the generator's, not the pipeline's.** Every escalation was a correct
+  FAIL_UNSAFE on an agent labelled unsafe; the replay serves one 30% of the time, so 40% of cold
+  tasks ending with a human is the corpus distribution showing through. The TSR here is a property
+  of the replay generator and must not be read as the system's TSR with a real model.
+- **UDR and CER are zero, but the pipeline caught everything before the gate**, so the gate's own
+  contribution (the UDR–FNR gap) is untested on this corpus. With n = 27 unsafe agents the UDR
+  bound is 12.5%; with n = 85 the CER bound is 4.3% — zero observed, not zero shown (OQ-11).
+- Reuse cuts time to deploy from ~8 s to ~50 ms: generation and validation are skipped entirely,
+  which is also why the warm path's safety rests on the original verdict (section 9.2).
+
 ---
 
 ## Deployed environment
