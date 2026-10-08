@@ -17,11 +17,11 @@ import hashlib
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-SCHEMA_VERSION = "1.4.0"
+SCHEMA_VERSION = "1.5.0"
 
 # Hard ceilings. A contract may declare less than these; it may never declare more.
 # The sandbox is configured *from* the contract (see OQ-15 in architecture.md), so
@@ -286,6 +286,11 @@ class ExecutionTrace(BaseModel):
     # the level's runtime. Free of cross-host clock skew, and where per-syscall
     # overhead of a userspace kernel shows up.
     sandbox_init_ms: Annotated[float, Field(ge=0)] | None = None
+    # What the agent returned, as the harness reported it. Validation only needs
+    # the match score, but the Task Executor hands this to the caller, and it
+    # must come from the sentinel report rather than from anything the agent
+    # printed.
+    agent_output: Any = None
 
     @property
     def has_safety_violation(self) -> bool:

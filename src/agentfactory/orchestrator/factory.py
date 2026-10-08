@@ -23,7 +23,9 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from agentfactory.contracts import AgentSpec, ValidationResult, Verdict
+from agentfactory.executor import DeploymentRefused, ExecutionRecord, TaskExecutor
 from agentfactory.telemetry.events import EventLog, EventType
+from agentfactory.validation.sandbox.base import SandboxExecutionError, SandboxUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +35,24 @@ API_RETRY_BASE_DELAY_SEC = 2.0
 
 
 class Outcome(StrEnum):
-    """How a task ended."""
+    """How a task ended.
+
+    With a Task Executor configured, REUSED and GENERATED_AND_DEPLOYED mean the
+    agent ran and produced the expected result. Without one the factory is in
+    validation-only mode and they mean "approved for deployment" — nothing ran.
+    """
 
     REUSED = "reused"
     GENERATED_AND_DEPLOYED = "generated_and_deployed"
     ESCALATED_UNSAFE = "escalated_unsafe"
     ESCALATED_EXHAUSTED = "escalated_exhausted"
+    # Passed validation, then stopped at the deployment gate (wrong code, a
+    # contract that does not fit, no L3 for a high-risk task). Goes to a human.
+    DEPLOYMENT_REFUSED = "deployment_refused"
+    # Passed validation, ran, and misbehaved: a catastrophic error.
+    EXECUTED_UNSAFE = "executed_unsafe"
+    # Ran cleanly but did not produce the expected result.
+    EXECUTED_FAILED = "executed_failed"
     FAILED_INFRASTRUCTURE = "failed_infrastructure"
 
 
@@ -55,10 +69,18 @@ class TaskResult:
     cost_usd: float = 0.0
     escalation_reason: str | None = None
     history: list[ValidationResult] = field(default_factory=list)
+    # Every deployment attempted for this task, in order: a refused or failed
+    # warm-path reuse, then the cold-path agent, if it came to that.
+    executions: list[ExecutionRecord] = field(default_factory=list)
+    refusals: list[str] = field(default_factory=list)
 
     @property
     def succeeded(self) -> bool:
         return self.outcome in (Outcome.REUSED, Outcome.GENERATED_AND_DEPLOYED)
+
+    @property
+    def execution(self) -> ExecutionRecord | None:
+        return self.executions[-1] if self.executions else None
 
 
 @dataclass
@@ -68,6 +90,9 @@ class TaskSpecification:
     available_tools: list[str]
     expected_output: dict[str, Any] | None = None
     risk_tier: str = "standard"  # standard | high — decides L3 escalation
+    # What the deployed agent is run on. The corpus's stub tools return fixed
+    # data, so this mainly identifies the case.
+    task_input: dict[str, Any] = field(default_factory=lambda: {"case": 1})
 
 
 class Registry(Protocol):
@@ -75,6 +100,8 @@ class Registry(Protocol):
     def mark_reused(self, agent_id: uuid.UUID) -> None: ...
     def register(self, spec: AgentSpec, result: ValidationResult, embedding: list[float], **kw: Any) -> None: ...
     def load_code(self, agent_id: uuid.UUID) -> str | None: ...
+    def record_execution(self, agent_id: uuid.UUID, task_id: str, tsr: float, **kw: Any) -> None: ...
+    def record_violation(self, agent_id: uuid.UUID, violation: str, **kw: Any) -> None: ...
 
 
 def _retry_api(call: Any, *, attempts: int = API_RETRY_ATTEMPTS, what: str = "API call") -> Any:
@@ -114,6 +141,7 @@ class AgentFactory:
         registry: Registry | None = None,
         embedder: Any = None,
         judge: Any = None,
+        executor: TaskExecutor | None = None,
         event_log: EventLog | None = None,
         max_attempts: int = MAX_REGENERATION_ATTEMPTS,
     ) -> None:
@@ -122,8 +150,13 @@ class AgentFactory:
         self.registry = registry
         self.embedder = embedder
         self.judge = judge
+        self.executor = executor
         self.event_log = event_log
         self.max_attempts = max_attempts
+
+    @property
+    def _run_id(self) -> str | None:
+        return self.event_log.run_id if self.event_log is not None else None
 
     def _emit(self, event_type: EventType, **fields: Any) -> None:
         if self.event_log is not None:
@@ -154,7 +187,8 @@ class AgentFactory:
         result = TaskResult(task_id=task.task_id, outcome=Outcome.FAILED_INFRASTRUCTURE)
 
         reusable = self._try_reuse(task)
-        if reusable is not None:
+        if reusable is not None and self.executor is None:
+            # Validation-only mode: the match is the result.
             self.registry.mark_reused(reusable.agent_id)  # type: ignore[union-attr]
             self._emit(
                 EventType.AGENT_REUSED,
@@ -172,6 +206,12 @@ class AgentFactory:
                 time_to_first_action_sec=time.perf_counter() - started,
                 mean_time_to_deploy_sec=time.perf_counter() - started,
             )
+        if reusable is not None:
+            warm = self._deploy_reused(task, reusable, result, started)
+            if warm is not None:
+                return warm
+            # Refused at the gate: the match does not fit this task. Generating
+            # a fresh agent is always a safe fallback.
 
         feedback: str | None = None
         for attempt in range(1, self.max_attempts + 1):
@@ -213,28 +253,38 @@ class AgentFactory:
             )
 
             correctness, source = self._grade(spec, task)
-            validation = self.pipeline.validate(
-                spec,
-                expected_output=task.expected_output,
-                correctness_score=correctness,
-                correctness_source=source,
-            )
+            try:
+                validation = self.pipeline.validate(
+                    spec,
+                    expected_output=task.expected_output,
+                    correctness_score=correctness,
+                    correctness_source=source,
+                )
+            except (SandboxExecutionError, SandboxUnavailableError) as exc:
+                return self._infrastructure_failure(result, task, "validation", exc)
             result.history.append(validation)
             result.verdict = validation.verdict
 
             if validation.verdict.is_pass:
                 self._register(spec, validation, task)
-                result.outcome = Outcome.GENERATED_AND_DEPLOYED
-                result.mean_time_to_deploy_sec = time.perf_counter() - started
-                result.time_to_first_action_sec = result.mean_time_to_deploy_sec
-                self._emit(
-                    EventType.AGENT_DEPLOYED,
-                    task_id=task.task_id,
-                    agent_id=spec.agent_id,
+                if self.executor is None:
+                    result.outcome = Outcome.GENERATED_AND_DEPLOYED
+                    result.mean_time_to_deploy_sec = time.perf_counter() - started
+                    result.time_to_first_action_sec = result.mean_time_to_deploy_sec
+                    self._emit(
+                        EventType.AGENT_DEPLOYED,
+                        task_id=task.task_id,
+                        agent_id=spec.agent_id,
+                        verdict=validation.verdict,
+                        latency_ms=validation.total_latency_ms,
+                    )
+                    return result
+                return self._deploy(
+                    task, spec, result, started,
+                    approved_sha256=validation.code_sha256,
                     verdict=validation.verdict,
-                    latency_ms=validation.total_latency_ms,
+                    reused=False,
                 )
-                return result
 
             if validation.verdict.is_safety_failure:
                 # Never regenerate against a safety control.
@@ -269,6 +319,146 @@ class AgentFactory:
             agent_id=result.agent_id,
             detail={"reason": result.escalation_reason},
         )
+        return result
+
+    # ------------------------------------------------------- deployment
+
+    def _deploy(
+        self,
+        task: TaskSpecification,
+        spec: AgentSpec,
+        result: TaskResult,
+        started: float,
+        *,
+        approved_sha256: str,
+        verdict: Verdict,
+        reused: bool,
+    ) -> TaskResult:
+        """Cold path: run the freshly validated agent; a refusal ends the task."""
+        try:
+            return self._execute(
+                task, spec, result, started,
+                approved_sha256=approved_sha256, verdict=verdict, reused=reused,
+            )
+        except DeploymentRefused as exc:
+            self._refused(task, spec, result, exc, reused=reused)
+            result.outcome = Outcome.DEPLOYMENT_REFUSED
+            result.escalation_reason = exc.reason
+            return result
+
+    def _deploy_reused(
+        self, task: TaskSpecification, match: Any, result: TaskResult, started: float
+    ) -> TaskResult | None:
+        """Warm path. Returns None when the gate refuses the match."""
+        assert self.registry is not None
+        code_b64 = self.registry.load_code(match.agent_id)
+        if code_b64 is None:
+            result.refusals.append(f"registered agent {match.agent_id} has no stored code")
+            return None
+        spec = match.to_spec(code_b64)
+        try:
+            outcome = self._execute(
+                task, spec, result, started,
+                approved_sha256=match.code_sha256, verdict=Verdict.PASS, reused=True,
+            )
+        except DeploymentRefused as exc:
+            self._refused(task, spec, result, exc, reused=True)
+            return None
+        # Counted only once the agent has actually been deployed: a match the
+        # gate turned away was not a reuse.
+        self.registry.mark_reused(match.agent_id)
+        self._emit(
+            EventType.AGENT_REUSED,
+            task_id=task.task_id,
+            agent_id=match.agent_id,
+            score=match.similarity,
+            detail={"mean_tsr": match.mean_tsr, "source_task_id": match.task_id},
+        )
+        outcome.reused = True
+        outcome.verdict = Verdict.PASS
+        return outcome
+
+    def _execute(
+        self,
+        task: TaskSpecification,
+        spec: AgentSpec,
+        result: TaskResult,
+        started: float,
+        *,
+        approved_sha256: str,
+        verdict: Verdict,
+        reused: bool,
+    ) -> TaskResult:
+        """Hand the agent to the Executor and turn its record into an outcome.
+
+        Raises DeploymentRefused for the caller to route; the two paths treat a
+        refusal differently.
+        """
+        assert self.executor is not None
+        result.mean_time_to_deploy_sec = time.perf_counter() - started
+        try:
+            record = self.executor.execute(
+                spec, task,
+                approved_sha256=approved_sha256, verdict=verdict,
+                reused=reused, run_id=self._run_id,
+            )
+        except (SandboxExecutionError, SandboxUnavailableError) as exc:
+            return self._infrastructure_failure(result, task, "execution", exc)
+
+        result.executions.append(record)
+        result.agent_id = spec.agent_id
+        result.time_to_first_action_sec = time.perf_counter() - started
+        if record.unsafe:
+            result.outcome = Outcome.EXECUTED_UNSAFE
+            result.escalation_reason = "; ".join(record.safety_reasons)
+        elif not record.succeeded:
+            result.outcome = Outcome.EXECUTED_FAILED
+            result.escalation_reason = "; ".join(record.failure_reasons)
+        else:
+            result.outcome = Outcome.REUSED if reused else Outcome.GENERATED_AND_DEPLOYED
+        self._emit(
+            EventType.AGENT_DEPLOYED,
+            task_id=task.task_id,
+            agent_id=spec.agent_id,
+            code_sha256=spec.code_sha256,
+            verdict=verdict,
+            passed=record.succeeded,
+            latency_ms=record.latency_ms,
+            detail={"outcome": result.outcome.value, "reused": reused},
+        )
+        return result
+
+    def _refused(
+        self,
+        task: TaskSpecification,
+        spec: AgentSpec,
+        result: TaskResult,
+        exc: DeploymentRefused,
+        *,
+        reused: bool,
+    ) -> None:
+        result.refusals.append(exc.reason)
+        self._emit(
+            EventType.DEPLOYMENT_REFUSED,
+            task_id=task.task_id,
+            agent_id=spec.agent_id,
+            code_sha256=spec.code_sha256,
+            detail={"reason": exc.reason, "reused": reused},
+        )
+
+    def _infrastructure_failure(
+        self, result: TaskResult, task: TaskSpecification, stage: str, exc: Exception
+    ) -> TaskResult:
+        """A run the agent never made. Recorded, never scored."""
+        logger.error("%s failed for %s: %s", stage, task.task_id, exc)
+        self._emit(
+            EventType.RUN_FAILED,
+            task_id=task.task_id,
+            agent_id=result.agent_id,
+            detail={"stage": stage, "error": str(exc)[:1000]},
+        )
+        result.outcome = Outcome.FAILED_INFRASTRUCTURE
+        result.escalation_reason = f"{stage} failed: {exc}"
         return result
 
     # ------------------------------------------------------------ parts

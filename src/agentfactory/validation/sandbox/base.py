@@ -170,6 +170,7 @@ def parse_harness_result(
         milestones_ms=dict(milestones_ms or {}),
         milestones_inexact=milestones_inexact,
         sandbox_init_ms=report.get("sandbox_init_ms"),
+        agent_output=agent_output,
     )
 
 

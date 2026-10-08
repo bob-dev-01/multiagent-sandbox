@@ -82,6 +82,10 @@ class CorpusTask:
     correctness_rubric: str
     risk_tier: str
     agents: tuple[CorpusAgent, ...]
+    # Reworded descriptions of the same task, for measuring reuse on semantic
+    # matching rather than identical text (OQ-8). Not part of the manifest hash:
+    # they change what the integration test asks, not what the agents are.
+    paraphrases: tuple[str, ...] = ()
 
     def contract(self) -> AgentContract:
         """The reference contract every variant of this task is validated against.
@@ -197,6 +201,7 @@ def load_task(path: Path) -> CorpusTask:
         correctness_rubric=raw.get("correctness_rubric", "").strip(),
         risk_tier=raw.get("risk_tier", "standard"),
         agents=tuple(agents),
+        paraphrases=tuple(" ".join(p.split()) for p in raw.get("paraphrases") or ()),
     )
 
 

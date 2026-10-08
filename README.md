@@ -82,15 +82,19 @@ src/agentfactory/
   generator/                     agent generation (Claude Sonnet 5)
   judge/                         correctness judge (Claude Opus 5) behind a calibration gate
   registry/                      PostgreSQL + pgvector, reuse decision, embeddings
+  registry/memory.py             the same reuse rules in-process, for the integration harness
   orchestrator/                  reuse-vs-generate, verdict routing, retries
+  executor/                      deployment gate + sandboxed execution (TSR, CER, UDR)
+  integration.py                 end-to-end loop on the corpus, cold and warm passes
   metrics/                       UDR, FNR, FPR, latency, Wilson intervals
   telemetry/                     JSONL event log with schema-on-write validation
   corpus.py                      ground-truth corpus loader
 corpus/tasks/                    labelled agent corpus, one file per task
-experiments/run_matrix.py        experiment harness with resume
+experiments/run_matrix.py        validation matrix with resume
+experiments/run_integration.py   integration test (needs the sandbox infrastructure)
 infra/                           Bicep templates + gVisor DaemonSet
 ops/afctl.py                     resource control panel
-tests/                           78 tests, no external services required
+tests/                           ~170 tests, no external services required
 ```
 
 ---
@@ -162,6 +166,37 @@ Each run writes a `manifest.json` tying the results to the exact corpus hash, se
 configuration, plus a JSONL event log. Interrupted batches resume from the log.
 
 L1 needs Linux for rlimits and seccomp — run it in WSL2 or on the orchestrator VM, not on Windows.
+
+### The integration test
+
+```bash
+python experiments/run_integration.py --level L2 --high-risk-level L3 --seeds 5
+```
+
+The whole loop — orchestrator, generator, pipeline, registry, Task Executor — on every corpus
+task against an empty registry (cold pass), then on each task's paraphrases against the populated
+one (warm pass). Every PASS is executed in a sandbox before the task counts as done, so this is
+where TSR, ARR, MTTD, UDR at the deployment boundary and CER are measured.
+
+What the Task Executor adds between verdict and execution, all failing closed:
+
+- the code that runs must hash to what was approved;
+- the agent's authorised tools must be a subset of what the task provides — on the warm path a
+  registered agent is matched by similarity and its contract was written for another task;
+- a high-risk task runs under L3 or not at all;
+- execution stays sandboxed and is judged by the strict profile. Misbehaviour after PASS is a
+  catastrophic error: recorded, reported to the registry so the agent is never served again, and
+  its output withheld.
+
+A refusal at the gate is what separates UDR from FNR (OQ-10). A refused warm-path match falls
+back to generating a fresh agent; a refused fresh agent goes to a human.
+
+Two things to keep in mind when reading its numbers. The generator is a **replay of the corpus**
+— each request returns the next labelled variant in a seeded order — so the error profile is the
+corpus distribution, not a model's; the same harness takes the real generator once the API key is
+in place. And the warm pass needs the **real embedder** (`pip install -e ".[embeddings]"`); with
+`--embedder hashing` reuse is matched on words, the run is marked lexical-only, and its ARR is
+not a result.
 
 ---
 
@@ -348,7 +383,11 @@ Honest list, so nobody discovers these the hard way:
   itself has not been executed.
 - **L1 and L2 runners have not been exercised end-to-end.** Unit-tested via the harness; L1 needs
   Linux (run it on the orchestrator VM) and L2 needs Docker or ACI.
-- **The registry schema has not been applied** to the deployed PostgreSQL server.
+- **The registry schema has not been applied** to the deployed PostgreSQL server. The
+  integration harness uses the in-process registry, which enforces the same rules.
+- **The integration test has not been run on the cluster**, and its generator is a corpus replay
+  until the API key is configured. The Task Executor is not wrapped in AutoGen; it is plain Python
+  behind the same interfaces.
 - **Practitioner interviews (RQ5, RQ6)** are outside this repository.
 
 See section 16 of `architecture.md` for the fifteen open questions this implementation is built

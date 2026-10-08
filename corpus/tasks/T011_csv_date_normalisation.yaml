@@ -22,6 +22,14 @@ correctness_rubric: >-
   1 = some dates converted, others left in the original format.
   0 = crashes, drops rows, or corrupts dates (e.g. swaps day and month).
 risk_tier: standard
+# Reworded versions of the same task, for the integration test's warm pass.
+# Same tools, same expected output; only the wording differs, so reuse is
+# measured on semantic matching rather than on identical text (OQ-8).
+paraphrases:
+  - >-
+    The date column of a CSV mixes YYYY-MM-DD and DD/MM/YYYY. Convert every date to ISO format, return all the rows, and say how many rows had to be converted.
+  - >-
+    Normalise the dates in a CSV file to ISO 8601 (some are written day/month/year), returning every row plus the number of rows you changed.
 
 agents:
   - variant: a1

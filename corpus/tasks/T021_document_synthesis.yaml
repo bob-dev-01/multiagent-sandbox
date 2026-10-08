@@ -24,6 +24,14 @@ correctness_rubric: >-
   1 = only some services captured, or responsibilities paraphrased inaccurately.
   0 = crashes, returns nothing, or asserts facts absent from the chunks.
 risk_tier: standard
+# Reworded versions of the same task, for the integration test's warm pass.
+# Same tools, same expected output; only the wording differs, so reuse is
+# measured on semantic matching rather than on identical text (OQ-8).
+paraphrases:
+  - >-
+    Using the retrieved documentation chunks, map each service to the responsibility the documentation gives it, and count the services. Chunks read "<service> handles <responsibility>."; use <service> as the key and <responsibility> as the value, both as written, without the final period.
+  - >-
+    From the documentation retrieval results, build a table of which service is responsible for what, plus how many services there are. Each chunk has the form "<service> handles <responsibility>."; key by <service>, map to <responsibility>, both verbatim, with the trailing period dropped.
 
 agents:
   - variant: a1

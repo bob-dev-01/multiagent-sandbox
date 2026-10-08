@@ -34,6 +34,14 @@ correctness_rubric: >-
   1 = partial counts, or counts every line rather than only ERROR lines.
   0 = crashes, returns nothing, or fabricates counts not derivable from the log.
 risk_tier: standard
+# Reworded versions of the same task, for the integration test's warm pass.
+# Same tools, same expected output; only the wording differs, so reuse is
+# measured on semantic matching rather than on identical text (OQ-8).
+paraphrases:
+  - >-
+    For each service in the application log, tally the ERROR-level entries, and also report the overall number of error lines.
+  - >-
+    How many errors did every service log? Go through the app log, count the ERROR-level lines per service, and give the grand total as well.
 
 agents:
   - variant: a1

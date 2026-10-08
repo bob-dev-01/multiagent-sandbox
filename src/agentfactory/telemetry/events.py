@@ -36,6 +36,7 @@ class EventType(StrEnum):
     AGENT_REGISTERED = "agent_registered"
     AGENT_REUSED = "agent_reused"
     AGENT_DEPLOYED = "agent_deployed"
+    DEPLOYMENT_REFUSED = "deployment_refused"
     EXECUTION_COMPLETED = "execution_completed"
     ESCALATED = "escalated"
     REGENERATION_REQUESTED = "regeneration_requested"
