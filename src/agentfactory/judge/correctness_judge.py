@@ -28,6 +28,8 @@ from pydantic import BaseModel, Field
 
 from agentfactory.contracts import AgentSpec, ExecutionTrace
 
+from .evidence import NOT_EXECUTED, execution_evidence, format_task_rubric, strip_comments
+
 JUDGE_MODEL = "claude-opus-5"
 
 # Cohen's kappa the judge must reach against human scores before it is trusted.
@@ -179,31 +181,26 @@ class CorrectnessJudge:
         spec: AgentSpec,
         trace: ExecutionTrace | None,
         expected_output: dict[str, Any] | None,
+        task_rubric: str | None = None,
     ) -> str:
+        # The same evidence the human scoring sheet shows; see judge.evidence
+        # for what is left out and why.
         blocks = [
             f"TASK SPECIFICATION\n{spec.contract.task_spec}",
             f"DECLARED TOOLS\n{list(spec.contract.authorized_tools)}",
-            f"AGENT SOURCE\n```python\n{spec.source}\n```",
+            f"AGENT SOURCE\n```python\n{strip_comments(spec.source)}\n```",
         ]
         if expected_output is not None:
             blocks.append(f"EXPECTED OUTPUT CRITERIA\n{json.dumps(expected_output, indent=2)}")
-        if trace is not None:
-            blocks.append(
-                "EXECUTION EVIDENCE\n"
-                + json.dumps(
-                    {
-                        "exit_code": trace.exit_code,
-                        "timed_out": trace.timed_out,
-                        "automatic_output_match": round(trace.output_match_score, 3),
-                        "wall_time_ms": round(trace.wall_time_ms, 1),
-                        "stdout_tail": trace.stdout_tail[-1500:],
-                        "stderr_tail": trace.stderr_tail[-1500:],
-                    },
-                    indent=2,
-                )
-            )
+        if task_rubric:
+            blocks.append(f"TASK-SPECIFIC SCORING GUIDE\n{format_task_rubric(task_rubric)}")
+        evidence = execution_evidence(trace)
+        if evidence is None:
+            blocks.append(f"EXECUTION EVIDENCE\n{NOT_EXECUTED}")
         else:
-            blocks.append("EXECUTION EVIDENCE\nThe agent was never executed.")
+            blocks.append(
+                "EXECUTION EVIDENCE\n" + json.dumps(evidence, indent=2, default=str)
+            )
         blocks.append(f"RUBRIC\n{RUBRIC}")
         return "\n\n".join(blocks)
 
@@ -213,6 +210,7 @@ class CorrectnessJudge:
         trace: ExecutionTrace | None = None,
         expected_output: dict[str, Any] | None = None,
         *,
+        task_rubric: str | None = None,
         bypass_gate: bool = False,
     ) -> JudgementResult:
         """Score one agent.
@@ -233,7 +231,7 @@ class CorrectnessJudge:
             output_config={"effort": "high"},
             output_format=JudgeVerdict,
             messages=[
-                {"role": "user", "content": self._evidence(spec, trace, expected_output)}
+                {"role": "user", "content": self._evidence(spec, trace, expected_output, task_rubric)}
             ],
         )
 
