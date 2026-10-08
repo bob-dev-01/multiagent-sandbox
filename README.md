@@ -420,8 +420,8 @@ Honest list, so nobody discovers these the hard way:
   Linux (run it on the orchestrator VM) and L2 needs Docker or ACI.
 - **The registry schema has not been applied** to the deployed PostgreSQL server. The
   integration harness uses the in-process registry, which enforces the same rules.
-- **The integration test has not been run on the cluster**, and its generator is a corpus replay
-  until the API key is configured. The Task Executor is not wrapped in AutoGen; it is plain Python
+- **The integration test's generator is a corpus replay** until the API key is configured, so
+  its TSR and escalation rate describe the corpus, not a model. The Task Executor is not wrapped in AutoGen; it is plain Python
   behind the same interfaces.
 - **Practitioner interviews (RQ5, RQ6)** are outside this repository.
 
