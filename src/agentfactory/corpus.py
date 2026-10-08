@@ -13,9 +13,10 @@ mean nothing.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import Counter
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,29 @@ class CorpusTask:
     # matching rather than identical text (OQ-8). Not part of the manifest hash:
     # they change what the integration test asks, not what the agents are.
     paraphrases: tuple[str, ...] = ()
+    # What this task's tools return, by tool name. A tool not listed returns the
+    # harness's generic stub. The expected output is derived from this data.
+    tool_fixtures: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def content_sha256(self) -> str:
+        """Identity of what the labels are judged against.
+
+        The labels mean "correct for this description, these tools, this data
+        and this expected output" — change any of them and the same agent code
+        can change label, so all of them are hashed, not just the agents.
+        """
+        payload = json.dumps(
+            {
+                "description": self.description,
+                "available_tools": list(self.available_tools),
+                "expected_output": self.expected_output,
+                "tool_fixtures": self.tool_fixtures,
+                "risk_tier": self.risk_tier,
+            },
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def contract(self) -> AgentContract:
         """The reference contract every variant of this task is validated against.
@@ -107,6 +131,7 @@ class CorpusTask:
             available_tools=list(self.available_tools),
             expected_output=self.expected_output,
             risk_tier=self.risk_tier,
+            tool_fixtures=dict(self.tool_fixtures),
         )
 
     def specs(self) -> Iterator[tuple[CorpusAgent, AgentSpec]]:
@@ -131,9 +156,9 @@ def load_task(path: Path) -> CorpusTask:
     if not isinstance(raw, dict):
         raise CorpusError(f"{path.name}: file is not a mapping")
 
-    for field in ("task_id", "domain", "description", "available_tools", "agents"):
-        if field not in raw:
-            raise CorpusError(f"{path.name}: missing required field {field!r}")
+    for required in ("task_id", "domain", "description", "available_tools", "agents"):
+        if required not in raw:
+            raise CorpusError(f"{path.name}: missing required field {required!r}")
 
     if raw["domain"] not in VALID_DOMAINS:
         raise CorpusError(
@@ -191,6 +216,16 @@ def load_task(path: Path) -> CorpusTask:
     if not isinstance(expected, dict) or not expected:
         raise CorpusError(f"{path.name}: expected_output is missing or empty")
 
+    fixtures = raw.get("tool_fixtures") or {}
+    if not isinstance(fixtures, dict):
+        raise CorpusError(f"{path.name}: tool_fixtures must be a mapping of tool -> response")
+    stray = sorted(set(fixtures) - set(raw["available_tools"]))
+    if stray:
+        # Data for a tool the task does not offer would never be seen, and is
+        # almost always a typo in a tool name that leaves the real tool on its
+        # generic stub.
+        raise CorpusError(f"{path.name}: tool_fixtures for tools the task does not offer: {stray}")
+
     return CorpusTask(
         task_id=raw["task_id"],
         domain=raw["domain"],
@@ -202,6 +237,7 @@ def load_task(path: Path) -> CorpusTask:
         risk_tier=raw.get("risk_tier", "standard"),
         agents=tuple(agents),
         paraphrases=tuple(" ".join(p.split()) for p in raw.get("paraphrases") or ()),
+        tool_fixtures=fixtures,
     )
 
 
@@ -239,13 +275,21 @@ def manifest(tasks: list[CorpusTask]) -> dict[str, Any]:
         for task in tasks
         for agent in task.agents
     }
+    task_entries = {task.task_id: task.content_sha256 for task in tasks}
+    # Code, label and the task each label is judged against: relabelling an
+    # agent or changing a task's expected output changes the hash, which the
+    # agent hashes alone did not.
     combined = hashlib.sha256(
-        "".join(f"{k}:{v['sha256']}" for k, v in sorted(entries.items())).encode()
+        (
+            "".join(f"{k}:{v['sha256']}:{v['label']}" for k, v in sorted(entries.items()))
+            + "".join(f"{k}:{v}" for k, v in sorted(task_entries.items()))
+        ).encode()
     ).hexdigest()
     return {
         "n_tasks": len(tasks),
         "n_agents": len(entries),
         "domains": sorted({t.domain for t in tasks}),
         "corpus_sha256": combined,
+        "tasks": task_entries,
         "agents": entries,
     }

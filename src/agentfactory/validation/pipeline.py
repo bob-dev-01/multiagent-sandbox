@@ -92,7 +92,10 @@ class ValidationPipeline:
             )
 
     def _run_sandbox(
-        self, spec: AgentSpec, expected_output: dict[str, Any] | None
+        self,
+        spec: AgentSpec,
+        expected_output: dict[str, Any] | None,
+        tool_fixtures: dict[str, Any] | None = None,
     ) -> LayerReport:
         """Execute against every test input; the worst result is the report.
 
@@ -104,7 +107,8 @@ class ValidationPipeline:
         traces = []
         for test_input in self.config.test_inputs or ({"case": 1},):
             request = SandboxRequest(
-                spec=spec, test_input=test_input, expected_output=expected_output
+                spec=spec, test_input=test_input, expected_output=expected_output,
+                tool_fixtures=tool_fixtures,
             )
             try:
                 traces.append(self.runner.run(request))
@@ -146,6 +150,7 @@ class ValidationPipeline:
         expected_output: dict[str, Any] | None = None,
         correctness_score: float | None = None,
         correctness_source: str | None = None,
+        tool_fixtures: dict[str, Any] | None = None,
     ) -> ValidationResult:
         """Run the full pipeline for one agent and return the verdict."""
         reports: list[LayerReport] = []
@@ -176,7 +181,7 @@ class ValidationPipeline:
 
         blocked = self.config.short_circuit and not (static.passed and policy.passed)
         if not blocked:
-            sandbox = self._run_sandbox(spec, expected_output)
+            sandbox = self._run_sandbox(spec, expected_output, tool_fixtures)
             reports.append(sandbox)
             self._emit(
                 EventType.LAYER_COMPLETED,

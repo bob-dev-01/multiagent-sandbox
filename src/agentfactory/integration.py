@@ -207,6 +207,7 @@ def run_integration(
                     available_tools=list(task.available_tools),
                     expected_output=task.expected_output,
                     risk_tier=task.risk_tier,
+                    tool_fixtures=dict(task.tool_fixtures),
                 )
             )
             for record in result.executions:

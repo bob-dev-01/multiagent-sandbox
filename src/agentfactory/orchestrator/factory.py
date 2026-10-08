@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 from agentfactory.contracts import AgentSpec, ValidationResult, Verdict
 from agentfactory.executor import DeploymentRefused, ExecutionRecord, TaskExecutor
+from agentfactory.judge.evidence import tool_data
 from agentfactory.telemetry.events import EventLog, EventType
 from agentfactory.validation.sandbox.base import SandboxExecutionError, SandboxUnavailableError
 
@@ -93,6 +94,8 @@ class TaskSpecification:
     # What the deployed agent is run on. The corpus's stub tools return fixed
     # data, so this mainly identifies the case.
     task_input: dict[str, Any] = field(default_factory=lambda: {"case": 1})
+    # What the task's tools return; empty means the harness's generic stubs.
+    tool_fixtures: dict[str, Any] = field(default_factory=dict)
 
 
 class Registry(Protocol):
@@ -259,6 +262,7 @@ class AgentFactory:
                     expected_output=task.expected_output,
                     correctness_score=correctness,
                     correctness_source=source,
+                    tool_fixtures=task.tool_fixtures,
                 )
             except (SandboxExecutionError, SandboxUnavailableError) as exc:
                 return self._infrastructure_failure(result, task, "validation", exc)
@@ -469,7 +473,11 @@ class AgentFactory:
             return None, None
         try:
             judgement = _retry_api(
-                lambda: self.judge.score(spec, None, task.expected_output), what="judge"
+                lambda: self.judge.score(
+                    spec, None, task.expected_output,
+                    tools_return=tool_data(task.available_tools, task.tool_fixtures),
+                ),
+                what="judge",
             )
         except Exception as exc:  # noqa: BLE001
             # An unavailable judge means no correctness dimension for this run,

@@ -25,6 +25,7 @@ import io
 import json
 import re
 import tokenize
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from agentfactory.contracts import ExecutionTrace
@@ -68,6 +69,22 @@ def format_task_rubric(rubric: str) -> str:
     """
     flat = " ".join(rubric.split())
     return re.sub(r"\s+(?=[0-3] = )", "\n", flat).strip()
+
+
+def tool_data(tools: Iterable[str], fixtures: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """What each of the task's tools returns — the facts an output is judged against.
+
+    Without it a rater cannot tell a correct mapping from a fabricated one, nor
+    score an agent that never ran. Task fixtures where defined, otherwise the
+    harness's generic stub, exactly as the sandbox would serve them.
+    """
+    from agentfactory.validation.sandbox.harness import _STUB_RESPONSES
+
+    fixtures = fixtures or {}
+    return {
+        name: fixtures[name] if name in fixtures else _STUB_RESPONSES.get(name, {"ok": True})
+        for name in tools
+    }
 
 
 def harness_report(trace: ExecutionTrace) -> dict[str, Any] | None:

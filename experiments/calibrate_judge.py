@@ -37,6 +37,7 @@ from agentfactory.judge.correctness_judge import (  # noqa: E402
     CorrectnessJudge,
     cohens_kappa,
 )
+from agentfactory.judge.evidence import tool_data  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -69,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
             traces.get(agent.source_sha256),
             task.expected_output,
             task_rubric=task.correctness_rubric,
+            tools_return=tool_data(task.available_tools, task.tool_fixtures),
             bypass_gate=True,
         )
         rows.append({

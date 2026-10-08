@@ -70,6 +70,9 @@ class SandboxRequest:
     test_input: dict[str, Any]
     expected_output: dict[str, Any] | None = None
     run_id: str = "adhoc"
+    # What each tool returns for this task, if the task defines it. Tools the
+    # task does not list fall back to the harness's generic stubs.
+    tool_fixtures: dict[str, Any] | None = None
 
     def payload(self) -> str:
         """What the harness reads on stdin."""
@@ -77,6 +80,7 @@ class SandboxRequest:
             {
                 "agent_source": self.spec.source,
                 "test_input": self.test_input,
+                "tool_fixtures": self.tool_fixtures or {},
                 "authorized_tools": list(self.spec.contract.authorized_tools),
                 "evidence_requirements": list(self.spec.contract.evidence_requirements),
                 "max_duration_sec": self.spec.contract.resource_limits.max_duration_sec,

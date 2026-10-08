@@ -28,7 +28,13 @@ from agentfactory.corpus import CorpusTask
 from agentfactory.telemetry.events import read_events
 
 from .correctness_judge import RUBRIC
-from .evidence import NOT_EXECUTED, execution_evidence, format_task_rubric, strip_comments
+from .evidence import (
+    NOT_EXECUTED,
+    execution_evidence,
+    format_task_rubric,
+    strip_comments,
+    tool_data,
+)
 
 SCORE_COLUMN = "Score (0-3)"
 COMMENT_COLUMN = "Comment"
@@ -38,7 +44,7 @@ ITEM_HEADERS = (
     ITEM_COLUMN,
     "Task",
     "Task specification",
-    "Declared tools",
+    "Tools and what they return",
     "Expected output",
     "Task-specific scoring guide",
     "Agent code (comments removed)",
@@ -56,7 +62,7 @@ class CalibrationItem:
     item_id: str
     task_id: str
     task_spec: str
-    tools: tuple[str, ...]
+    tools: dict[str, Any]
     expected_output: dict[str, Any] | None
     task_rubric: str
     source: str
@@ -104,7 +110,7 @@ def build_items(
                 item_id=f"C{index:0{width}d}",
                 task_id=task.task_id,
                 task_spec=task.description,
-                tools=tuple(task.available_tools),
+                tools=tool_data(task.available_tools, task.tool_fixtures),
                 expected_output=task.expected_output,
                 task_rubric=format_task_rubric(task.correctness_rubric),
                 source=strip_comments(agent.source),
@@ -132,7 +138,7 @@ def item_row(item: CalibrationItem) -> list[Any]:
         item.item_id,
         item.task_id,
         item.task_spec,
-        ", ".join(item.tools),
+        _json(item.tools),
         _json(item.expected_output),
         item.task_rubric,
         item.source.rstrip(),
@@ -221,7 +227,7 @@ def write_sheet(items: Sequence[CalibrationItem], path: Path) -> None:
 
     # ----------------------------------------------------------------- Items
     ws = wb.create_sheet("Items")
-    widths = (7, 7, 40, 16, 28, 40, 70, 14, 8, 40, 36, 11, 36)
+    widths = (7, 7, 40, 40, 28, 40, 70, 14, 8, 40, 36, 11, 36)
     for col, (header, width) in enumerate(zip(ITEM_HEADERS, widths, strict=True), start=1):
         cell = ws.cell(row=1, column=col, value=header)
         cell.font = bold
@@ -232,7 +238,8 @@ def write_sheet(items: Sequence[CalibrationItem], path: Path) -> None:
     score_col = ITEM_HEADERS.index(SCORE_COLUMN) + 1
     comment_col = ITEM_HEADERS.index(COMMENT_COLUMN) + 1
     code_cols = {ITEM_HEADERS.index(h) + 1 for h in (
-        "Expected output", "Agent code (comments removed)", "Agent output", "Error / stderr")}
+        "Tools and what they return", "Expected output", "Agent code (comments removed)",
+        "Agent output", "Error / stderr")}
 
     for i, item in enumerate(items, start=2):
         for col, value in enumerate(item_row(item), start=1):

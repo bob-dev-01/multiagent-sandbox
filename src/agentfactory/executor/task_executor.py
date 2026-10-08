@@ -73,6 +73,7 @@ class TaskLike(Protocol):
     expected_output: dict[str, Any] | None
     risk_tier: str
     task_input: Mapping[str, Any]
+    tool_fixtures: Mapping[str, Any]
 
 
 class ExecutionRegistry(Protocol):
@@ -186,6 +187,7 @@ class TaskExecutor:
                 spec=spec,
                 test_input=dict(task.task_input),
                 expected_output=task.expected_output,
+                tool_fixtures=dict(task.tool_fixtures),
             )
         )
         latency_ms = (time.perf_counter() - started) * 1000

@@ -158,35 +158,62 @@ def test_task_without_expected_output_is_rejected(tmp_path) -> None:
         load_task(path)
 
 
-# Only variants whose label carries no safety violation are executed here: the
-# test runner has no isolation, and unsafe-labelled code belongs in a sandbox.
-_EXECUTABLE_LABELS = (GroundTruth.SAFE_CORRECT, GroundTruth.INCORRECT_ONLY)
-
-
-@pytest.mark.parametrize(
-    ("task", "agent", "spec"),
-    [
-        pytest.param(t, a, s, id=a.agent_key)
-        for t in load_corpus()
-        for a, s in t.specs()
-        if a.label in _EXECUTABLE_LABELS
-    ],
-)
-def test_strict_automatic_check_agrees_with_the_label(task, agent, spec, local_runner) -> None:
-    """The labels and expected_output must agree, or every metric is off.
+@pytest.mark.parametrize("task", load_corpus(), ids=lambda t: t.task_id)
+def test_every_task_passes_the_corpus_check(task) -> None:
+    """Labels, expected output and tool data agree; see agentfactory.corpus_check.
 
     The first version of this corpus had expected_output carrying only a count.
     Three T001 variants labelled correct keyed their counts by the wrong log
     field, and a day/month swap and a fabricated mapping both passed — the
-    automatic check could not see what the labels claimed.
+    automatic check could not see what the labels claimed. Unsafe-labelled
+    agents are examined statically and never executed here.
     """
-    from agentfactory.validation.sandbox.base import SandboxRequest
+    from agentfactory.corpus_check import check_task
 
-    trace = local_runner.run(
-        SandboxRequest(spec=spec, test_input={"case": 1}, expected_output=task.expected_output)
+    report = check_task(task)
+    assert report.ok, report.problems
+
+
+def test_no_two_agents_share_code() -> None:
+    from collections import Counter
+
+    shas = Counter(a.source_sha256 for t in load_corpus() for a in t.agents)
+    assert max(shas.values()) == 1
+
+
+def test_fixtures_for_tools_the_task_lacks_are_rejected(tmp_path) -> None:
+    agents = [
+        {"variant": f"v{i}", "label": label, "failure_mode": fm,
+         "source": "def run(task_input, tools):\n    return {}\n"}
+        for i, (label, fm) in enumerate(
+            [("safe_correct", None)] * 5
+            + [("unsafe_only", "m")] * 2
+            + [("incorrect_only", "m")] * 2
+            + [("both", "m")]
+        )
+    ]
+    path = tmp_path / "bad.yaml"
+    path.write_text(
+        yaml.safe_dump({
+            "task_id": "TX", "domain": "incident_response", "description": "x",
+            "available_tools": ["read_log_file"], "expected_output": {"a": 1, "b": 2},
+            "tool_fixtures": {"read_csv": {"rows": []}}, "agents": agents,
+        }),
+        encoding="utf-8",
     )
-    assert trace.harness_reported and not trace.has_safety_violation
-    if agent.label is GroundTruth.SAFE_CORRECT:
-        assert trace.output_match_score == 1.0
-    else:
-        assert trace.output_match_score < 1.0
+    with pytest.raises(CorpusError, match="read_csv"):
+        load_task(path)
+
+
+def test_manifest_changes_when_a_label_or_expected_output_changes() -> None:
+    import dataclasses
+
+    tasks = load_corpus()
+    before = manifest(tasks)["corpus_sha256"]
+    t0 = tasks[0]
+    relabelled = dataclasses.replace(
+        t0, agents=(dataclasses.replace(t0.agents[0], label=GroundTruth.BOTH), *t0.agents[1:])
+    )
+    assert manifest([relabelled, *tasks[1:]])["corpus_sha256"] != before
+    changed = dataclasses.replace(t0, expected_output={**t0.expected_output, "extra": 1})
+    assert manifest([changed, *tasks[1:]])["corpus_sha256"] != before

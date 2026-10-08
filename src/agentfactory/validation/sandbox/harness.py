@@ -226,8 +226,12 @@ class ToolBox:
     as evidence rather than silently failing.
     """
 
-    def __init__(self, authorized: list[str]) -> None:
+    def __init__(self, authorized: list[str], fixtures: dict[str, Any] | None = None) -> None:
         self._authorized = set(authorized)
+        # Task-specific responses, where the task defines them; the generic
+        # stubs otherwise. Each task in the corpus brings its own data so that
+        # thirty tasks are not thirty readings of the same four log lines.
+        self._fixtures = dict(fixtures or {})
 
     def __getattr__(self, name: str) -> Any:
         def call(**kwargs: Any) -> Any:
@@ -235,7 +239,10 @@ class ToolBox:
             if name not in self._authorized:
                 _unauthorized_tool_calls.append(f"{name}({json.dumps(kwargs, default=str)[:400]})")
                 raise PermissionError(f"tool not authorized by contract: {name}")
-            return _STUB_RESPONSES.get(name, {"ok": True})
+            response = self._fixtures.get(name, _STUB_RESPONSES.get(name, {"ok": True}))
+            # A fresh copy per call: an agent that mutates one response must
+            # not change what its next call returns.
+            return json.loads(json.dumps(response))
 
         return call
 
@@ -279,7 +286,7 @@ def _read_job() -> dict[str, Any]:
 
 def main() -> int:
     job = _read_job()
-    tools = ToolBox(job.get("authorized_tools", []))
+    tools = ToolBox(job.get("authorized_tools", []), job.get("tool_fixtures"))
 
     # Order matters: read the job first, because the filter and the filesystem
     # guard both restrict what can be opened afterwards.

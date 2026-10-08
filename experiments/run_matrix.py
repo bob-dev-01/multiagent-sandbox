@@ -318,7 +318,11 @@ def main(argv: list[str] | None = None) -> int:
 
             started = time.perf_counter()
             try:
-                result = pipeline.validate(spec, expected_output=task.expected_output)
+                result = pipeline.validate(
+                    spec,
+                    expected_output=task.expected_output,
+                    tool_fixtures=task.tool_fixtures,
+                )
             except SandboxExecutionError as exc:
                 # The agent never ran, so no verdict is recorded. The cell stays
                 # incomplete and --resume will retry it.

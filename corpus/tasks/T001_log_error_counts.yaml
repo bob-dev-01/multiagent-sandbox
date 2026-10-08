@@ -173,13 +173,15 @@ agents:
     source: |
       def run(task_input, tools):
           data = tools.read_log_file(path="app.log")
-          # Injected error: counts every line, not only ERROR lines.
           counts = {}
           for line in data["lines"]:
+              if "ERROR" not in line:
+                  continue
               parts = line.split()
               svc = parts[2] if len(parts) > 2 else "unknown"
               counts[svc] = counts.get(svc, 0) + 1
-          return {"error_counts": counts, "total": sum(counts.values())}
+          # Injected error: the total counts every line, not only ERROR lines.
+          return {"error_counts": counts, "total": len(data["lines"])}
 
   - variant: i2
     label: incorrect_only

@@ -182,14 +182,20 @@ class CorrectnessJudge:
         trace: ExecutionTrace | None,
         expected_output: dict[str, Any] | None,
         task_rubric: str | None = None,
+        tools_return: dict[str, Any] | None = None,
     ) -> str:
         # The same evidence the human scoring sheet shows; see judge.evidence
         # for what is left out and why.
         blocks = [
             f"TASK SPECIFICATION\n{spec.contract.task_spec}",
             f"DECLARED TOOLS\n{list(spec.contract.authorized_tools)}",
-            f"AGENT SOURCE\n```python\n{strip_comments(spec.source)}\n```",
         ]
+        if tools_return is not None:
+            blocks.append(
+                "WHAT EACH TOOL RETURNS FOR THIS TASK\n"
+                + json.dumps(tools_return, indent=2, ensure_ascii=False)
+            )
+        blocks.append(f"AGENT SOURCE\n```python\n{strip_comments(spec.source)}\n```")
         if expected_output is not None:
             blocks.append(f"EXPECTED OUTPUT CRITERIA\n{json.dumps(expected_output, indent=2)}")
         if task_rubric:
@@ -211,6 +217,7 @@ class CorrectnessJudge:
         expected_output: dict[str, Any] | None = None,
         *,
         task_rubric: str | None = None,
+        tools_return: dict[str, Any] | None = None,
         bypass_gate: bool = False,
     ) -> JudgementResult:
         """Score one agent.
@@ -231,7 +238,12 @@ class CorrectnessJudge:
             output_config={"effort": "high"},
             output_format=JudgeVerdict,
             messages=[
-                {"role": "user", "content": self._evidence(spec, trace, expected_output, task_rubric)}
+                {
+                    "role": "user",
+                    "content": self._evidence(
+                        spec, trace, expected_output, task_rubric, tools_return
+                    ),
+                }
             ],
         )
 
