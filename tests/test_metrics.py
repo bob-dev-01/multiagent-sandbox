@@ -204,3 +204,15 @@ def test_breakdown_by_isolation_level() -> None:
     assert l1_safety.false_negative_rate == 1.0
     assert l3_safety.false_negative_rate == 0.0
     assert l1_latency.p50 == 50
+
+
+def test_a_shell_mangled_resource_id_is_refused() -> None:
+    """Git Bash turns '/subscriptions/...' into 'C:/Program Files/Git/subscriptions/...'."""
+    import pytest
+
+    from agentfactory.telemetry.cpu_credits import NullSampler, build_sampler
+
+    with pytest.raises(ValueError, match="MSYS_NO_PATHCONV"):
+        build_sampler("C:/Program Files/Git/subscriptions/x/resourceGroups/rg/providers/p/vmss")
+    assert isinstance(build_sampler(None), NullSampler)
+    assert build_sampler("/subscriptions/x/resourceGroups/rg").resource_id.startswith("/sub")

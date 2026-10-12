@@ -168,4 +168,17 @@ class NullSampler:
 
 
 def build_sampler(resource_id: str | None) -> CpuCreditSampler | NullSampler:
-    return CpuCreditSampler(resource_id) if resource_id else NullSampler()
+    if not resource_id:
+        return NullSampler()
+    if not resource_id.startswith("/subscriptions/"):
+        # Git Bash rewrites an argument starting with "/" into a Windows path
+        # ("C:/Program Files/Git/subscriptions/..."). az then finds no resource,
+        # every sample comes back empty, and the latency data loses the confound
+        # it was meant to carry — silently, for a whole batch. Refuse instead.
+        raise ValueError(
+            f"not an Azure resource id: {resource_id!r}. If it starts with a drive "
+            "path, the shell rewrote it — set MSYS_NO_PATHCONV=1 (Git Bash) or pass "
+            "it via the AGENTFACTORY_SANDBOX_VMSS_ID / AGENTFACTORY_VM_RESOURCE_ID "
+            "environment variables."
+        )
+    return CpuCreditSampler(resource_id)

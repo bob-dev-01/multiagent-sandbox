@@ -275,7 +275,9 @@ def main(argv: list[str] | None = None) -> int:
         host = credit_hosts.get(lvl)
         if host:
             probe = credit_samplers[lvl].sample()
-            state = "active" if probe.available else "unavailable"
+            # A node just scaled up publishes no credit metrics for a few
+            # minutes; an empty first probe is expected then, not a fault.
+            state = "active" if probe.available else "no data yet (new node?)"
             print(f"  cpu credit sampling for {lvl}: {state} ({host.rsplit('/', 1)[-1]})")
         else:
             print(f"  cpu credit sampling for {lvl}: off (no host id given)")
