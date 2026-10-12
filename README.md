@@ -310,8 +310,9 @@ What this says:
 - **gVisor's overhead is now measurable, and it is about 84 ms per sandbox start** — +44% on the
   bootstrap-to-harness path, with a tight interval. That is the cost of running the interpreter's
   start-up syscalls through the Sentry. The agent's own work is too short to show anything.
-- **It is a small fraction of the pod lifecycle.** End to end it is lost in the noise of
-  scheduling and container creation: the wall-clock difference is not significant, and both levels
+- **It is a small fraction of the pod lifecycle.** At this sample size it is lost in the noise of
+  scheduling and container creation end to end — the full run below, with ten times the samples,
+  does resolve it (+127 ms wall clock) — and both levels
   sit at ~5.3 s, of which ~3.9 s is kubectl process start-up on the orchestrator (`apply` ~1.6 s,
   log fetch ~2.2 s) — identical across levels and nothing to do with isolation.
 - **`running` is almost never seen on its own** (101 of 126 runs): the agent finishes before
@@ -364,6 +365,50 @@ What this says, and what it does not:
   bound is 12.5%; with n = 85 the CER bound is 4.3% — zero observed, not zero shown (OQ-11).
 - Reuse cuts time to deploy from ~8 s to ~50 ms: generation and validation are skipped entirely,
   which is also why the warm path's safety rests on the original verdict (section 9.2).
+
+### Full-corpus run 1 (2026-10-12)
+
+`runs/full2-l2l3`, commit `885742d`: all 30 tasks, 300 agents × L2, L3 × 3 replicates = 1,800
+cells, strict profile, bandit enabled in Layer 1, one test input. No infrastructure failures;
+every L2 run saw the host kernel and every L3 run `4.19.0-gvisor`. The CPU-credit balance was
+recorded on all 1,800 verdicts and stayed between 68 and 157, rising through the run — no
+throttling. (An earlier attempt, `full1-l2l3`, was stopped after 10 minutes when its credit
+samples turned out empty; see `885742d`.)
+
+**Classification — every verdict matches its label at both levels:**
+
+| Label | n (per level) | Verdict |
+|---|---|---|
+| safe_correct | 450 | PASS 450 |
+| incorrect_only | 180 | FAIL_INCORRECT 180 |
+| unsafe_only | 180 | FAIL_UNSAFE 180 |
+| both | 90 | FAIL_UNSAFE 90 (stopped before execution; correctness unknown, not failed) |
+
+FNR 0.000 [0.000, 0.007] over 540 unsafe cells, FPR 0.000 over 1,260 safe. All 60 incorrect
+agents — including the borderline ones with a partial match — are caught under strict. As with
+the pilots this is the corpus's own planted faults, so it shows the pipeline works on them, not
+that it resists an adaptive adversary; and every unsafe agent was stopped by Layers 1-2, so FNR
+cannot differ between levels here (H_2, open).
+
+**Latency, sandbox runs only** (n = 630 per level; L3 − L2 difference of medians, bootstrap 95%
+CI, Mann–Whitney p):
+
+| | L2 p50 | L3 p50 | L3 − L2 | 95% CI | p |
+|---|---|---|---|---|---|
+| `sandbox_init_ms` (in-sandbox) | 193.0 | 270.5 | **+77.5** | [76.1, 79.0] | < 10⁻¹⁵ |
+| apply → terminated | 1578.6 | 1637.1 | **+58.4** | [25.2, 91.8] | 2 × 10⁻¹³ |
+| wall clock | 5323.2 | 5450.2 | **+127.0** | [95.2, 173.9] | < 10⁻¹⁵ |
+| agent itself | 0.3 | 0.4 | — | — | — |
+
+- **gVisor's start-up cost holds at scale**: +78 ms (+40%) on the in-sandbox path, across 30
+  tasks rather than 3, with a tighter interval than pilot 3's 84 ms.
+- **End to end it is now resolved, and small**: +127 ms on a ~5.4 s wall clock, about 2.4%.
+  Pilot 3 could not see it (n = 63); this is the same effect with ten times the samples.
+- The agents still run for well under a millisecond at p50 (p95 ≈ 3–4 ms), so syscall overhead
+  during the agent's own work is not what this corpus measures — a corpus with heavier agents
+  would be needed for that.
+- `running` collapsed into `terminated` in 73% of runs; `apply → terminated` remains the exact
+  end-to-end figure.
 
 ---
 

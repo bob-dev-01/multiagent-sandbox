@@ -640,7 +640,9 @@ genuine.
    (`milestones_ms`, with upper-bound-only milestones listed in `milestones_inexact`), and the
    sandbox times its own start-up on its own clock (`sandbox_init_ms`). Re-run with it (pilot 3,
    n = 63 per level): gVisor adds **83.5 ms** to sandbox start-up (95% CI 79–90 ms, +44%), and the
-   end-to-end wall-clock difference is not significant. Details in the README.
+   end-to-end wall-clock difference is not significant at that sample size. The first full-corpus
+   run (n = 630 per level) confirms the start-up cost (+77.5 ms, CI 76–79) and resolves the
+   end-to-end one: +127 ms on ~5.4 s, about 2.4%. Details in the README.
 
 ### OQ-5 — Security-Latency Score is unit-dependent and has a singularity — Medium
 
