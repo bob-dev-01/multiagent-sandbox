@@ -24,6 +24,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
+# The API key and Azure settings live in .env (gitignored). Values already in
+# the environment win, so a key set in the shell is never overridden.
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(REPO_ROOT / ".env", override=False)
 
 from agentfactory.corpus import load_corpus  # noqa: E402
 from agentfactory.judge.calibration import (  # noqa: E402
