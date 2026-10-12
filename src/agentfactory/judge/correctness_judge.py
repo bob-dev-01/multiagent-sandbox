@@ -30,7 +30,7 @@ from agentfactory.contracts import AgentSpec, ExecutionTrace
 
 from .evidence import NOT_EXECUTED, execution_evidence, format_task_rubric, strip_comments
 
-JUDGE_MODEL = "claude-opus-5"
+JUDGE_MODEL = "claude-sonnet-5"
 
 # Cohen's kappa the judge must reach against human scores before it is trusted.
 KAPPA_THRESHOLD = 0.80
@@ -86,8 +86,8 @@ class JudgementResult:
 
     @property
     def cost_usd(self) -> float:
-        """Opus 5 list pricing: $5 per MTok in, $25 per MTok out."""
-        return self.input_tokens * 5e-6 + self.output_tokens * 25e-6
+        """Sonnet 5 list pricing: $2 per MTok in, $10 per MTok out."""
+        return self.input_tokens * 2e-6 + self.output_tokens * 10e-6
 
 
 class JudgeNotCalibratedError(RuntimeError):
@@ -145,7 +145,7 @@ def cohens_kappa(human: list[int], machine: list[int]) -> float:
 
 
 class CorrectnessJudge:
-    """Opus 5 behind a calibration gate."""
+    """Sonnet 5 behind a calibration gate."""
 
     def __init__(
         self,

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Pinned deliberately. Re-pinning mid-study invalidates the judge calibration
 # and breaks comparability across batches, so this is a dated decision rather
 # than a default (OQ-12 in architecture.md).
-GENERATOR_MODEL = "claude-sonnet-5"
+GENERATOR_MODEL = "claude-opus-5"
 
 SYSTEM_PROMPT = """\
 You write small, single-purpose Python agents for an enterprise automation system.
@@ -88,8 +88,8 @@ class GenerationResult:
 
     @property
     def cost_usd(self) -> float:
-        """Sonnet 5 list pricing: $2 per MTok in, $10 per MTok out."""
-        return self.input_tokens * 2e-6 + self.output_tokens * 10e-6
+        """Opus 5 list pricing: $5 per MTok in, $25 per MTok out."""
+        return self.input_tokens * 5e-6 + self.output_tokens * 25e-6
 
 
 class GenerationError(RuntimeError):

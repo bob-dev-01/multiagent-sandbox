@@ -711,6 +711,10 @@ Note also that there is **no production environment** in this study. "Production
 Two items to confirm before implementation:
 
 1. **Model currency.** The stack pins `claude-sonnet-4-5` for both agent generation and correctness judging. That model ID is valid and still served, but it is a previous generation — the current lineup includes Claude Sonnet 5 (`claude-sonnet-5`) and Claude Opus 5 (`claude-opus-5`). Since the plan is dated April 2026 and implementation would start later, **the pinned version should be an explicit, dated decision** rather than an inherited default: it affects both generated-agent quality and LLM-judge calibration, and re-pinning mid-study would invalidate the κ calibration.
+
+   **Decided 2026-10-12:** generator `claude-opus-5`, judge `claude-sonnet-5`, pinned for the
+   whole study (the newer 5.5 versions were available and deliberately not adopted). Changing
+   either after calibration means recalibrating the judge.
 2. **Embeddings.** The stack lists `voyage-3-lite` "via Anthropic". Voyage models are not served by the Anthropic API — they are a separate service with its own endpoint and credentials. An explicit embedding provider and endpoint needs to be chosen and pinned (Voyage directly, Azure OpenAI, or a local model). Since the Registry's FAISS index is built from these embeddings, **the reuse threshold τ = 0.85 is only meaningful relative to a specific embedding model** and must be re-tuned if the model changes.
 
 ### OQ-13 — Relationship between Task 6's reported results and Task 7's plan — **Worth resolving before submission**

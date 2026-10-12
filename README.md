@@ -79,8 +79,8 @@ src/agentfactory/
     sandbox/                     harness + L1/L2/L3 runners
     aggregator.py                verdict + strictness profiles (RQ4)
     pipeline.py                  the three layers, wired
-  generator/                     agent generation (Claude Sonnet 5)
-  judge/                         correctness judge (Claude Opus 5) behind a calibration gate
+  generator/                     agent generation (Claude Opus 5)
+  judge/                         correctness judge (Claude Sonnet 5) behind a calibration gate
   registry/                      PostgreSQL + pgvector, reuse decision, embeddings
   registry/memory.py             the same reuse rules in-process, for the integration harness
   orchestrator/                  reuse-vs-generate, verdict routing, retries
