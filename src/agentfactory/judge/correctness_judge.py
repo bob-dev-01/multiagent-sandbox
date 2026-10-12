@@ -173,7 +173,10 @@ class CorrectnessJudge:
         if self._client is None:
             from anthropic import Anthropic
 
-            self._client = Anthropic(api_key=self._api_key) if self._api_key else Anthropic()
+            from agentfactory.secrets import anthropic_api_key
+
+            # The environment first, then Key Vault; fetched only at first use.
+            self._client = Anthropic(api_key=self._api_key or anthropic_api_key())
         return self._client
 
     def _evidence(

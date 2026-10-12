@@ -119,9 +119,12 @@ class AgentGenerator:
                 from anthropic import Anthropic
             except ImportError as exc:  # pragma: no cover
                 raise GenerationError("the anthropic package is not installed") from exc
-            # A bare constructor also resolves credentials from an `ant auth`
-            # profile, so an unset ANTHROPIC_API_KEY is not necessarily an error.
-            self._client = Anthropic(api_key=self._api_key) if self._api_key else Anthropic()
+            # The environment first, then Key Vault (agentfactory.secrets).
+            # Resolved here, not in __init__, so constructing a generator never
+            # touches the vault.
+            from agentfactory.secrets import anthropic_api_key
+
+            self._client = Anthropic(api_key=self._api_key or anthropic_api_key())
         return self._client
 
     def _prompt(
