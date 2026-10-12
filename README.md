@@ -6,10 +6,30 @@ is **safe to deploy** and **correct enough to be useful** before it executes.
 
 Master's research, Solution Architecture and Data Engineering — Bobur Yusupov, IT Park University.
 
-> **Status: deployed, pilot run complete.** All three isolation levels have been exercised
-> end to end against the live environment. The corpus is complete at 30 tasks (300 labelled
-> agents), but its labels await the second reviewer and the full experiment has not been run on
-> it, so nothing here is a thesis result — the pilot figures below cover the first 3 tasks.
+> **Status (2026-10-12): deployed; first full-corpus run complete.** The labelled corpus is
+> complete at 30 tasks and 300 agents, and 1,800 of the experiment's 2,700 validation runs are
+> done (L2 and L3; L1 is still to run on the orchestrator VM). The corpus labels still await the
+> second reviewer and the LLM judge is not yet calibrated, so these are measurements, not yet
+> thesis results.
+
+## Results at a glance
+
+| What | Result | Where |
+|---|---|---|
+| Classification, full corpus, L2 and L3 | Every one of 1,800 verdicts matches its label; FNR 0 (95% upper bound 0.7%), FPR 0 | [Full-corpus run 1](#full-corpus-run-1-2026-10-12) |
+| Cost of gVisor (L3 vs L2) | +77.5 ms on sandbox start-up (CI 76–79); +127 ms on a ~5.4 s validation, ≈2.4% | [Full-corpus run 1](#full-corpus-run-1-2026-10-12) |
+| Provisioning vs isolation | Container Instances: 43.5 s per validation, almost all provisioning; the same work on a warm AKS node: ~5 s | [Results](#results) |
+| End-to-end loop with execution | No unsafe deployment (UDR 0), no catastrophic error (CER 0) | [Integration test 1](#integration-test-1-2026-10-08) |
+| Reuse on reworded tasks | Close paraphrase reused 18/18, free paraphrase 0/18 at τ = 0.85 | [Integration test 1](#integration-test-1-2026-10-08) |
+
+Progress against the experimental design:
+
+| Part | Done | Remaining |
+|---|---|---|
+| Validation matrix (30 tasks × 10 agents × 3 levels × 3 replicates = 2,700) | 1,800 (L2, L3) | 900 at L1, on the orchestrator VM |
+| Strictness sweep (RQ4) | — | recomputable offline from the run records |
+| Integration test (RQ3) | corpus-replay generator, 10 seeds | live generator (Claude Opus 5) |
+| Judge calibration (ADR-9) | blind scoring sheet and tooling | human scores, then κ |
 
 ---
 
@@ -80,7 +100,10 @@ src/agentfactory/
     aggregator.py                verdict + strictness profiles (RQ4)
     pipeline.py                  the three layers, wired
   generator/                     agent generation (Claude Opus 5)
-  judge/                         correctness judge (Claude Sonnet 5) behind a calibration gate
+  judge/                         correctness judge (Claude Sonnet 5) behind a calibration gate,
+                                 the evidence both raters see, and the blind scoring sheet
+  secrets.py                     API key from the environment or Key Vault, fetched at first use
+  corpus_check.py                checks every corpus label against the agent's behaviour
   registry/                      PostgreSQL + pgvector, reuse decision, embeddings
   registry/memory.py             the same reuse rules in-process, for the integration harness
   orchestrator/                  reuse-vs-generate, verdict routing, retries
@@ -92,6 +115,8 @@ src/agentfactory/
 corpus/tasks/                    labelled agent corpus, one file per task
 experiments/run_matrix.py        validation matrix with resume
 experiments/run_integration.py   integration test (needs the sandbox infrastructure)
+experiments/build_calibration_sheet.py, calibrate_judge.py   judge calibration (ADR-9)
+corpus/AUTHORING.md              how a corpus task is written and when it is accepted
 infra/                           Bicep templates + gVisor DaemonSet
 ops/afctl.py                     resource control panel
 tests/                           ~170 tests, no external services required
@@ -109,9 +134,65 @@ pytest
 
 The test suite runs entirely offline — no Azure, no Docker, no API key.
 
-To use the generator or judge, put your key in `.env` (copy from `.env.example`). It is
-gitignored. In the deployed system the key lives in Key Vault and the VM reads it via managed
-identity; nothing in this repo ever writes a key to disk.
+The generator and the judge read the Anthropic key from `ANTHROPIC_API_KEY` if it is set (for
+example in a gitignored `.env`), and otherwise from secret `anthropic-api-key` in the project Key
+Vault — through the signed-in `az` CLI on a workstation, through managed identity on the VM. The
+key is fetched at the first model call and held only in memory; nothing writes it to disk.
+
+Models are pinned for the whole study: **Claude Opus 5** (`claude-opus-5`) generates agents and
+**Claude Sonnet 5** (`claude-sonnet-5`) judges correctness (architecture.md, OQ-12).
+
+---
+
+## Demonstrating it
+
+Everything in this section except the last part runs on a laptop with no cloud resources.
+
+**1. The test suite** — about 190 tests: validation layers, sandbox harness, aggregator and
+strictness profiles, the Task Executor and its deployment gate, the registry's reuse rules, the
+corpus, judge calibration tooling, key resolution.
+
+```bash
+pytest -q
+```
+
+**2. The corpus and its labels.** Every task's safe agents are run against the task's own tool
+data and must reproduce its expected output; incorrect agents must miss it; unsafe agents must be
+caught statically (and are never executed by this check).
+
+```bash
+python -m agentfactory.corpus_check            # all 30 tasks
+python -m agentfactory.corpus_check T007       # one task, with per-agent detail
+```
+
+**3. The whole loop, end to end, locally.** The integration test in the suite runs orchestrator →
+generator → pipeline → registry → executor on all 30 tasks and their paraphrases, with a runner
+that refuses to execute any agent labelled unsafe.
+
+```bash
+pytest -q tests/test_integration.py -v
+```
+
+**4. One live judge call** (needs the key, costs about one cent):
+
+```bash
+python -c "import sys; sys.path.insert(0,'src'); from agentfactory.corpus import load_corpus; from agentfactory.judge.correctness_judge import CorrectnessJudge; from agentfactory.judge.evidence import tool_data; t=load_corpus()[0]; a=next(x for x in t.agents if x.variant=='i1'); r=CorrectnessJudge().score(a.to_spec(t.contract()), None, t.expected_output, task_rubric=t.correctness_rubric, tools_return=tool_data(t.available_tools, t.tool_fixtures), bypass_gate=True); print(r.score, r.justification)"
+```
+
+**5. Live, on the cluster** (about 10 minutes to start, a few minutes to run; stop it afterwards):
+
+```bash
+az aks start -g rg-agentfactory-dev -n agentfac-aks
+kubectl -n kube-system rollout status ds/gvisor-installer
+export AGENTFACTORY_SANDBOX_VMSS_ID=<resource id of the sandbox node pool's scale set>
+MSYS_NO_PATHCONV=1 python experiments/run_matrix.py --run-id demo --levels L2,L3 --replicates 1 --test-inputs 1 --limit 20
+python -m ops.afctl down --yes
+```
+
+Each L3 trace reports kernel `4.19.0-gvisor` and each L2 trace the host's; the run refuses to
+record a trace whose kernel does not match its level. Pass resource ids through environment
+variables, not arguments: Git Bash rewrites an argument starting with `/` into a Windows path,
+and the experiment now refuses such an id rather than sampling nothing.
 
 ---
 
@@ -158,8 +239,9 @@ first if anything about the setup is ever changed:
 ## Running the experiment
 
 ```bash
-python experiments/run_matrix.py --levels L1 --replicates 3
-python experiments/run_matrix.py --levels L1,L2,L3 --replicates 3 --resume
+python experiments/run_matrix.py --levels L2,L3 --replicates 3 --test-inputs 1   # full corpus, AKS
+python experiments/run_matrix.py --levels L1 --replicates 3 --test-inputs 1      # on the VM
+python experiments/run_matrix.py --run-id <id> --levels L1,L2,L3 --resume        # after an interruption
 ```
 
 Each run writes a `manifest.json` tying the results to the exact corpus hash, seed, git commit and
@@ -193,8 +275,8 @@ back to generating a fresh agent; a refused fresh agent goes to a human.
 
 Two things to keep in mind when reading its numbers. The generator is a **replay of the corpus**
 — each request returns the next labelled variant in a seeded order — so the error profile is the
-corpus distribution, not a model's; the same harness takes the real generator once the API key is
-in place. And the warm pass needs the **real embedder** (`pip install -e ".[embeddings]"`); with
+corpus distribution, not a model's; wiring the live generator (`AgentGenerator`, Claude Opus 5)
+into this harness is the next step. And the warm pass needs the **real embedder** (`pip install -e ".[embeddings]"`); with
 `--embedder hashing` reuse is matched on words, the run is marked lexical-only, and its ARR is
 not a result.
 
@@ -217,9 +299,13 @@ understate standard errors.
 
 ---
 
-## Pilot results
+## Results
 
-One replicate, one test input, 30 labelled agents per level, run against the live environment.
+In the order they were measured. The first sections are the pilots on the original 3 tasks (30
+agents); the full-corpus run is at the end. Run records are kept outside the repository
+(`runs/`, gitignored), each with a manifest naming the corpus hash, configuration and commit.
+
+**Pilots 1–2** — one replicate, one test input, 30 labelled agents per level.
 
 ### Classification
 
@@ -463,15 +549,22 @@ Honest list, so nobody discovers these the hard way:
   right answer to its description, and that unsafe_only agents are otherwise correct — is the
   reviewer's job. Every injected violation is a plain pattern Layers 1-2 recognise, so FNR does
   not vary by isolation level on this corpus (H_2, open).
-- **No validation batch has been run.** The environment exists and L3 is verified; the experiment
-  itself has not been executed.
-- **L1 and L2 runners have not been exercised end-to-end.** Unit-tested via the harness; L1 needs
-  Linux (run it on the orchestrator VM) and L2 needs Docker or ACI.
+- **L1 has not run in the full experiment.** It needs Linux (rlimits, seccomp), so it runs on the
+  orchestrator VM: 900 of the 2,700 planned validations.
+- **The LLM judge is not calibrated.** The blind scoring sheet and the comparison script exist
+  (`experiments/build_calibration_sheet.py`, `experiments/calibrate_judge.py`); the human scores
+  do not yet. Until κ ≥ 0.80 the judge does not score unattended (ADR-9).
+- **The integration test still uses the corpus-replay generator**, so its TSR and escalation
+  rate describe the corpus, not a model. The live generator has its key and model pinned but is
+  not yet wired into the harness.
+- **The strictness sweep (RQ4) has not been computed.** It should be recomputable from the
+  existing run records without new runs.
 - **The registry schema has not been applied** to the deployed PostgreSQL server. The
   integration harness uses the in-process registry, which enforces the same rules.
-- **The integration test's generator is a corpus replay** until the API key is configured, so
-  its TSR and escalation rate describe the corpus, not a model. The Task Executor is not wrapped in AutoGen; it is plain Python
-  behind the same interfaces.
+- **The Task Executor is not wrapped in AutoGen**, which the research plan names; it is plain
+  Python behind the same interfaces.
+- **The agents are light.** They run for under a millisecond, so this corpus measures gVisor's
+  start-up cost, not its per-syscall cost during heavy agent work.
 - **Practitioner interviews (RQ5, RQ6)** are outside this repository.
 
 See section 16 of `architecture.md` for the fifteen open questions this implementation is built
