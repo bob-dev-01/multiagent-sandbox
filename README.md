@@ -18,6 +18,7 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 |---|---|---|
 | Classification, full corpus, all three levels | Every one of 2,700 verdicts matches its label; FNR 0 (95% upper bound 0.5%), FPR 0 | [Full-corpus run 1](#full-corpus-run-1-2026-10-12), [L1](#full-corpus-run-1-l1-2026-10-13) |
 | Cost of gVisor (L3 vs L2) | +77.5 ms on sandbox start-up (CI 76–79); +127 ms on a ~5.4 s validation, ≈2.4% | [Full-corpus run 1](#full-corpus-run-1-2026-10-12) |
+| Strictness profile (RQ4) | Incorrect agents passed: 75% permissive, 62% balanced, 0% strict; no correct agent rejected under any profile | [Strictness sweep](#strictness-sweep--rq4--h_4-2026-10-13) |
 | L1 vs the container levels | Sandbox stage 47 ms at L1 vs ~5.3–5.5 s at L2/L3 — about 110× faster, at the price of sharing the host kernel | [L1](#full-corpus-run-1-l1-2026-10-13) |
 | Provisioning vs isolation | Container Instances: 43.5 s per validation, almost all provisioning; the same work on a warm AKS node: ~5 s | [Results](#results) |
 | End-to-end loop with execution | No unsafe deployment (UDR 0), no catastrophic error (CER 0) | [Integration test 1](#integration-test-1-2026-10-08) |
@@ -28,7 +29,7 @@ Progress against the experimental design:
 | Part | Done | Remaining |
 |---|---|---|
 | Validation matrix (30 tasks × 10 agents × 3 levels × 3 replicates = 2,700) | 2,700 (L1, L2, L3) | — |
-| Strictness sweep (RQ4) | — | recomputable offline from the run records |
+| Strictness sweep (RQ4) | all 2,700 cells × 4 profiles, replay verified | the cost side, with generated agents |
 | Integration test (RQ3) | corpus-replay generator, 10 seeds | live generator (Claude Opus 5) |
 | Judge calibration (ADR-9) | blind scoring sheet and tooling | human scores, then κ |
 
@@ -527,6 +528,37 @@ managed identity, and a summary plus the sandbox latencies were brought back
 - As at L2 and L3, every unsafe agent was stopped by Layers 1-2, so the isolation level could
   not change FNR here (H_2).
 
+### Strictness sweep — RQ4 / H_4 (2026-10-13)
+
+`experiments/strictness_sweep.py` re-judges all 2,700 cells of the matrix under each of the four
+profiles with the pipeline's own aggregator — no new runs, because a verdict is a function of
+recorded evidence and the profile. Before trusting it, the replay reproduced every recorded
+`strict` verdict exactly (2,700 of 2,700; L1 was re-judged on the VM, where its raw logs are).
+Pooled over L1, L2 and L3 (`runs/strictness_sweep_all_levels.json`):
+
+| Profile | Unsafe passed | Safe flagged unsafe | Incorrect passed | Correct rejected |
+|---|---|---|---|---|
+| permissive (match ≥ 0.3) | 0 / 810 | 0 / 1,890 | **405 / 540 (75.0%)** | 0 / 1,350 |
+| balanced (match ≥ 0.5) | 0 / 810 | 0 / 1,890 | **333 / 540 (61.7%)** | 0 / 1,350 |
+| strict (exact match) | 0 / 810 | 0 / 1,890 | **0 / 540** | 0 / 1,350 |
+| paranoid (+ MEDIUM findings) | 0 / 810 | 0 / 1,890 | **0 / 540** | 0 / 1,350 |
+
+Exact McNemar tests between adjacent profiles: permissive → balanced, 72 cells change verdict
+(p ≈ 4 × 10⁻²²); balanced → strict, 333 (p ≈ 10⁻¹⁰⁰); strict → paranoid, none.
+
+- **The threshold is what decides whether incorrect agents get through.** The 60 incorrect agents
+  score 0.0 (15), 0.33 (8), 0.5 (27) and 0.67 (10) on the automatic output match; permissive lets
+  through everything from 0.33, balanced everything from 0.5, strict nothing. That is H_4's
+  effect, and it is large: three in four incorrect agents pass under the loosest profile.
+- **On this corpus the trade-off is one-sided.** No correct agent was rejected under any profile,
+  so strict costs nothing here and paranoid adds nothing: its extra rule (MEDIUM static findings
+  count as unsafe) only fires on agents that are already unsafe. This is partly by construction —
+  the corpus check requires every correct agent to reproduce the expected output exactly — so the
+  cost side of the trade-off, correct agents rejected for a formatting deviation, can only be
+  measured with generated agents (the live-generator run).
+- Safety does not move at all: every unsafe agent fails Layer 1 on a HIGH finding, which every
+  profile treats as unsafe.
+
 ---
 
 ## Deployed environment
@@ -586,8 +618,9 @@ Honest list, so nobody discovers these the hard way:
 - **The integration test still uses the corpus-replay generator**, so its TSR and escalation
   rate describe the corpus, not a model. The live generator has its key and model pinned but is
   not yet wired into the harness.
-- **The strictness sweep (RQ4) has not been computed.** It should be recomputable from the
-  existing run records without new runs.
+- **The cost side of RQ4 is unmeasured.** The sweep shows strictness stopping incorrect agents
+  at no cost, because every correct corpus agent matches exactly; what strictness costs on
+  generated agents needs the live generator.
 - **The registry schema has not been applied** to the deployed PostgreSQL server. The
   integration harness uses the in-process registry, which enforces the same rules.
 - **The Task Executor is not wrapped in AutoGen**, which the research plan names; it is plain
