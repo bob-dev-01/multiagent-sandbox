@@ -109,9 +109,12 @@ class GeneratedAgent(BaseModel):
     python_source: str = Field(
         description="The complete Python module defining run(task_input, tools)."
     )
+    # Required, with no default: in the first live run a defaulted empty list
+    # let the model omit the field and then call the task's tool anyway, which
+    # escalated 18 otherwise-sound agents as unsafe.
     authorized_tools: list[str] = Field(
-        default_factory=list,
-        description="Exact tool names the agent calls. Minimum necessary.",
+        description="Exact tool names the agent calls via `tools.<name>(...)`. "
+        "Every tool the code calls must be listed; list nothing it does not call.",
     )
     cpu_cores: float = Field(default=1.0, ge=0.1, le=MAX_CPU_CORES)
     memory_mb: int = Field(default=256, ge=32, le=MAX_MEMORY_MB)

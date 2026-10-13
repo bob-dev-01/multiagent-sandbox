@@ -188,6 +188,8 @@ class _Visitor(ast.NodeVisitor):
             attr = node.args[1]
             if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
                 resolved = f"{target}.{attr.value}" if target else attr.value
+                if target == "tools":
+                    self._check_tool(attr.value, node)
                 if resolved in FORBIDDEN_CALLS or attr.value in FORBIDDEN_ATTRIBUTES:
                     self._add(
                         "AF105",
@@ -216,20 +218,22 @@ class _Visitor(ast.NodeVisitor):
                     node,
                 )
 
-        # A call to a tool that the contract never declared.
-        if name.startswith("tools.") or name.startswith("tool_"):
-            tool = name.split(".", 1)[1] if name.startswith("tools.") else name
-            if self.authorized_tools and tool not in self.authorized_tools:
-                self._add(
-                    "AF108",
-                    Severity.HIGH,
-                    f"call to undeclared tool: {tool}",
-                    node,
-                )
+        # A call to a tool that the contract never declared. `tools.<name>`
+        # is checked in visit_Attribute, which also sees the tool passed
+        # around uncalled, e.g. retry(tools.read_log_file, ...).
+        if name.startswith("tool_"):
+            self._check_tool(name, node)
 
         self.generic_visit(node)
 
+    def _check_tool(self, tool: str, node: ast.AST) -> None:
+        # An empty allowlist authorises nothing; it is not a wildcard.
+        if tool not in self.authorized_tools:
+            self._add("AF108", Severity.HIGH, f"use of undeclared tool: {tool}", node)
+
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        if isinstance(node.value, ast.Name) and node.value.id == "tools":
+            self._check_tool(node.attr, node)
         if node.attr in FORBIDDEN_ATTRIBUTES:
             self._add(
                 "AF109",

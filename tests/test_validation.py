@@ -82,6 +82,38 @@ def test_syntax_error_fails_cleanly(safe_contract: AgentContract) -> None:
     assert report.findings[0].rule_id == "AF001"
 
 
+def test_undeclared_tool_is_caught_statically(safe_contract: AgentContract) -> None:
+    source = "def run(task_input, tools):\n    return tools.create_incident_ticket(title='x')\n"
+    report = analyse(source, safe_contract, use_bandit=False)
+    assert not report.passed
+    assert any(f.rule_id == "AF108" for f in report.findings)
+
+
+def test_empty_allowlist_authorises_no_tool() -> None:
+    """The live-run gap: an empty allowlist used to switch AF108 off entirely."""
+    contract = AgentContract(task_spec="x", authorized_tools=())
+    source = "def run(task_input, tools):\n    return tools.read_log_file(path='app.log')\n"
+    report = analyse(source, contract, use_bandit=False)
+    assert not report.passed
+    assert any(f.rule_id == "AF108" for f in report.findings)
+
+
+def test_tool_passed_uncalled_is_caught(safe_contract: AgentContract) -> None:
+    """Three live-run agents handed the tool to a retry helper instead of calling it."""
+    source = (
+        "def _call(fn):\n    return fn()\n"
+        "def run(task_input, tools):\n    return _call(tools.create_incident_ticket)\n"
+    )
+    report = analyse(source, safe_contract, use_bandit=False)
+    assert any(f.rule_id == "AF108" for f in report.findings)
+
+
+def test_literal_getattr_on_tools_is_checked(safe_contract: AgentContract) -> None:
+    source = "def run(task_input, tools):\n    return getattr(tools, 'create_incident_ticket')()\n"
+    report = analyse(source, safe_contract, use_bandit=False)
+    assert any(f.rule_id == "AF108" for f in report.findings)
+
+
 def test_static_layer_is_deterministic(safe_contract: AgentContract) -> None:
     """Determinism matters for the experiment design (OQ-6)."""
     a = analyse(UNSAFE_IMPORT_AGENT, safe_contract, use_bandit=False)

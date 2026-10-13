@@ -54,6 +54,12 @@ def test_prompt_documents_tool_interfaces() -> None:
     assert "TOOL INTERFACES" in prompt and '"rows"' in prompt
 
 
+def test_generator_schema_requires_the_tool_list() -> None:
+    from agentfactory.generator.agent_generator import GeneratedAgent
+
+    assert "authorized_tools" in GeneratedAgent.model_json_schema()["required"]
+
+
 def test_budget_cap_and_agent_record() -> None:
     sink = io.StringIO()
     live = LiveGenerator(_SafeStandIn(), budget_usd=1.0, sink=sink)
