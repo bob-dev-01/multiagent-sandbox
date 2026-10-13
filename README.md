@@ -24,6 +24,7 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 | End-to-end loop with execution | No unsafe deployment (UDR 0), no catastrophic error (CER 0) | [Integration test 1](#integration-test-1-2026-10-08) |
 | Reuse on reworded tasks | Close paraphrase reused 18/18, free paraphrase 0/18 at τ = 0.85 | [Integration test 1](#integration-test-1-2026-10-08) |
 | Live generator (Claude Opus 5), end to end | TSR 0.92 cold / 0.87 warm, ARR 0.51; 221 agents generated, none executed unsafely; $13.11 | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
+| Live generator after the fixes | TSR **0.978** cold / **1.000** warm, ARR 0.48; 188 agents, 182 PASS, none executed unsafely; $9.12 | [Integration test 3](#integration-test-3--live-generator-after-the-fixes-2026-10-13) |
 | What strictness costs on generated agents | PASS 192 permissive → 161 strict; 39 of the 42 strict rejections trace to a paraphrase that drops a constraint | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
 
 Progress against the experimental design:
@@ -32,7 +33,7 @@ Progress against the experimental design:
 |---|---|---|
 | Validation matrix (30 tasks × 10 agents × 3 levels × 3 replicates = 2,700) | 2,700 (L1, L2, L3) | — |
 | Strictness sweep (RQ4) | all 2,700 cells × 4 profiles, replay verified; 221 generated agents × 4 profiles | — |
-| Integration test (RQ3) | corpus-replay generator, 10 seeds; live generator (Claude Opus 5), 3 seeds | a rerun after the AF108 fix and the paraphrase repair |
+| Integration test (RQ3) | corpus-replay generator, 10 seeds; live generator (Claude Opus 5), 3 seeds, before and after the AF108 fix and paraphrase repair | — |
 | Judge calibration (ADR-9) | blind scoring sheet and tooling | human scores, then κ |
 
 ---
@@ -517,6 +518,44 @@ What this says:
 
 ---
 
+### Integration test 3 — live generator after the fixes (2026-10-13)
+
+`runs/integ3-live`, commit `11529d7`: integration test 2 repeated with the same settings and
+seeds after three changes — AF108 widened (an empty allowlist authorises nothing; tool references
+are checked), `authorized_tools` required in the generator's schema, and six paraphrases repaired
+so each carries every constraint that decides the expected output. 188 agents for $9.12; no
+infrastructure failure.
+
+| | Integration test 2 | Integration test 3 |
+|---|---|---|
+| TSR, cold (n = 90) | 0.922 [0.848, 0.962] | **0.978** [0.923, 0.994] |
+| TSR, warm (n = 180) | 0.867 [0.809, 0.909] | **1.000** [0.979, 1.000] |
+| ARR, warm | 0.506 [0.429, 0.584] | 0.478 [0.406, 0.550] |
+| Escalated, cold / warm | 0.078 / 0.128 | 0.022 / 0.000 |
+| Agents generated (regenerations) | 221 (30) | 188 (4) |
+| Verdicts | 161 PASS, 42 FAIL_INCORRECT, 18 FAIL_BOTH | 182 PASS, 4 FAIL_INCORRECT, 2 FAIL_UNSAFE |
+| Agents with an empty tool list | 18 | 2 |
+| Executed unsafely | 0 | 0 |
+| Cost | $13.11 | $9.12 |
+
+- **Undeclared tool use is now stopped at Layer 1.** Both escalations (T004 and T006, cold pass)
+  were again agents that declared no tools and used the task's tool; AF108 flagged them
+  statically, before any sandbox ran, which makes them FAIL_UNSAFE rather than FAIL_BOTH.
+  Requiring the field cut such agents from 18 of 221 to 2 of 188 but did not eliminate them; an
+  unsafe verdict goes to a person, by design, rather than back to the generator.
+- **With complete task text the warm pass succeeded every time.** Of the four FAIL_INCORRECT
+  verdicts, two are T008 paraphrase 0 returning `samples` as a list — one constraint the repair
+  missed, fixed after this run — and two are genuine model errors (T005 paraphrase 1, T029
+  paraphrase 1). All four were regenerated successfully.
+- **Strictness costs almost nothing once the specification is complete.** Re-judged under each
+  profile: PASS 185 permissive, 184 balanced, 182 strict, 182 paranoid — against 192 / 180 / 161
+  / 160 in integration test 2. What strictness rejected there was, overwhelmingly, the ambiguity
+  of the task text.
+- The reuse rate is unchanged within its interval: the repaired paraphrases are longer, and
+  reuse still depends on how far a rewording drifts from the original (integration test 1).
+
+---
+
 ### Full-corpus run 1 (2026-10-12)
 
 `runs/full2-l2l3`, commit `885742d`: all 30 tasks, 300 agents × L2, L3 × 3 replicates = 1,800
@@ -678,12 +717,12 @@ Honest list, so nobody discovers these the hard way:
 - **The LLM judge is not calibrated.** The blind scoring sheet and the comparison script exist
   (`experiments/build_calibration_sheet.py`, `experiments/calibrate_judge.py`); the human scores
   do not yet. Until κ ≥ 0.80 the judge does not score unattended (ADR-9).
-- **Five paraphrases are underspecified** (T004 p1, T005 p0, T008 p0 and p1, T016 p1): they
-  drop a constraint the original states, which the live run turned into 39 FAIL_INCORRECT
-  verdicts. Repairing them changes the paraphrase text, so integration test 1's reuse figures
-  belong to the corpus as it was then.
-- **The live run has not been repeated with the AF108 fix**; its 18 FAIL_BOTH verdicts would now
-  be caught at Layer 1 rather than in the sandbox.
+- **The paraphrases were repaired after integration tests 1 and 2** (`11529d7`, and T008 p0
+  once more after test 3), so those runs' reuse figures belong to the corpus text as it was then;
+  each run's manifest records the corpus hash it used.
+- **The generator still occasionally declares no tools** (2 of 188 agents in integration test 3).
+  Layer 1 stops them; whether such a verdict should go back to the generator instead of a person
+  is an open design question.
 - **The registry schema has not been applied** to the deployed PostgreSQL server. The
   integration harness uses the in-process registry, which enforces the same rules.
 - **The Task Executor is not wrapped in AutoGen**, which the research plan names; it is plain
