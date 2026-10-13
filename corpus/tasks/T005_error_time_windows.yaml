@@ -42,7 +42,7 @@ correctness_rubric: >-
 risk_tier: standard
 paraphrases:
   - >-
-    For each service that logged ERROR-level lines, give the earliest and latest timestamp of those lines as "error_windows" ({service: {"first": ..., "last": ...}}, timestamps verbatim from the log, which is unordered), plus "services_with_errors" and "error_line_count".
+    For each service that logged ERROR-level lines, give the earliest and latest timestamp of those lines as "error_windows" ({service: {"first": ..., "last": ...}}, timestamps verbatim from the log, which is unordered), plus "services_with_errors" (how many services) and "error_line_count" (how many ERROR lines).
   - >-
     When did each service start and stop failing? Using only lines whose level is ERROR, and remembering the log lines are shuffled, report per service the first and last error time under "error_windows" as {"first", "last"} (copy the timestamps exactly), how many services had errors as "services_with_errors", and how many ERROR lines there were as "error_line_count".
 

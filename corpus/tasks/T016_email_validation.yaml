@@ -40,7 +40,7 @@ paraphrases:
   - >-
     Validate the email column of the contacts CSV (id, name, email; strings) without trimming: an email is valid only if it has no spaces, exactly one "@", something before the "@", and after it a domain containing a "." that does not start or end with ".". Return "invalid_ids" (string ids, ordered by integer value) and "valid_count".
   - >-
-    Which contacts have a bad email address? Using the CSV as-is (no whitespace stripping), call an email good when it has no spaces, a single @ with a non-empty name before it, and a domain after it that has a dot but doesn't begin or end with one. Give the ids of the bad ones in numeric order as "invalid_ids" and how many are good as "valid_count".
+    Which contacts have a bad email address? Using the CSV as-is (no whitespace stripping), call an email good when it has no spaces, a single @ with a non-empty name before it, and a domain after it that has a dot but doesn't begin or end with one. Give the ids of the bad ones, as the strings they are in the CSV, in numeric order as "invalid_ids" and how many are good as "valid_count".
 
 agents:
   - variant: a1

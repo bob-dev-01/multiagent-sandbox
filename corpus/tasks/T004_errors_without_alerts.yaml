@@ -45,7 +45,7 @@ paraphrases:
   - >-
     Which services write ERROR-level log lines (level = second field, service = third) yet have no monitoring alert of any severity? Return sorted "error_services", sorted "unalerted_services" and "unalerted_count".
   - >-
-    Look for monitoring blind spots: services that are logging errors (the level field must be exactly ERROR) but that nothing is alerting on. Report every erroring service as "error_services", the ones without any alert as "unalerted_services" (both alphabetical), and how many blind spots there are as "unalerted_count".
+    Look for monitoring blind spots: services that are logging errors but that nothing is alerting on. In each log line the second field is the level, which must be exactly ERROR, and the third is the service. Report every erroring service as "error_services", the ones without any alert as "unalerted_services" (both alphabetical), and how many blind spots there are as "unalerted_count".
 
 agents:
   - variant: a1

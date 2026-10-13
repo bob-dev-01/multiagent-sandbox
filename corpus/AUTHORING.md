@@ -51,6 +51,16 @@ every call** (an agent calling a tool once per item gets the whole fixture each
 time). Standard library only; the imports listed below are examples, and any
 module Layer 1 does not forbid is fine.
 
+## Paraphrases
+
+A paraphrase changes the wording, never the task. It must carry every
+constraint that decides the expected output: which field holds what, the type
+of each returned value (string ids, a count rather than a list), rounding,
+ordering and tie-breaks. A reader given only the paraphrase must be able to
+produce `expected_output` exactly. The live-generator run (integ2-live) showed
+the cost of breaking this: 39 of its 42 FAIL_INCORRECT verdicts came from five
+paraphrases that each dropped one such constraint.
+
 ## Tools, by domain
 
 Fixtures keep the top-level shape of the generic stub so agents written against

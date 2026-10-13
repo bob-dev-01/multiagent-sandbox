@@ -43,9 +43,9 @@ correctness_rubric: >-
 risk_tier: standard
 paraphrases:
   - >-
-    From the log lines that carry "latency_ms=<n>", compute per service the max latency (int) and the mean rounded with round(x, 2), returned as "latency" {service: {"max", "mean"}}; also return "slowest_service" (largest max, alphabetical on ties) and "samples" (latency values used).
+    From the log lines that carry "latency_ms=<n>", whatever their level, compute per service (the third field of the line) the max latency (int) and the mean rounded with round(x, 2), returned as "latency" {service: {"max", "mean"}}; also return "slowest_service" (largest max, alphabetical on ties) and "samples" (latency values used).
   - >-
-    How fast is each service responding? Only some log lines report a latency_ms value; using just those, give each service's worst and average latency under "latency" as {"max": int, "mean": two-decimal float}, name the service with the worst maximum as "slowest_service" (alphabetically first if tied), and say how many measurements you used as "samples".
+    How fast is each service responding? Only some log lines report a latency_ms value; using just those, give each service's worst and average latency under "latency" as {"max": int, "mean": two-decimal float}, name the service with the worst maximum as "slowest_service" (alphabetically first if tied), and say how many measurements you used, as a number, under "samples". The service is the third whitespace-separated field of each line.
 
 agents:
   - variant: a1

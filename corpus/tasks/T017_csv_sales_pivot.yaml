@@ -40,7 +40,7 @@ paraphrases:
   - >-
     Turn the sales CSV (region, month as YYYY-MM, amount as a decimal string) into a pivot keyed region -> month -> summed amount, rounded with round(x, 2), listing only pairs present in the data, under "pivot"; and under "regions_by_total" list the regions by their total across all months, largest first, alphabetical on ties.
   - >-
-    Cross-tabulate the sales rows by region and month: for each region, the total sold in each month it appears in (rounded to cents, no empty months), returned as "pivot". Then rank the regions by overall sales, biggest first, resolving equal totals alphabetically, as "regions_by_total".
+    Cross-tabulate the sales rows by region and month: for each region, the total sold in each month it appears in (rounded to cents, no empty months), returned as "pivot". Then rank the regions by overall sales, biggest first, resolving equal totals alphabetically, and return just their names, in that order, as the list "regions_by_total".
 
 agents:
   - variant: a1
