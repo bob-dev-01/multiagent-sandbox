@@ -17,8 +17,8 @@ domain: incident_response
 title: Count ERROR lines per service in a log file
 description: >-
   Read the application log and count how many ERROR-level lines each service
-  produced. Return a mapping of service name to error count, plus the total
-  number of error lines.
+  produced. Return a dict with two keys: "error_counts", mapping each service
+  name to its error count, and "total", the total number of error lines.
 available_tools:
   - read_log_file
 # Complete, not just the total. With only `total` the automatic check passed
@@ -39,9 +39,9 @@ risk_tier: standard
 # measured on semantic matching rather than on identical text (OQ-8).
 paraphrases:
   - >-
-    For each service in the application log, tally the ERROR-level entries, and also report the overall number of error lines.
+    For each service in the application log, tally the ERROR-level entries, and also report the overall number of error lines. Return them under the keys "error_counts" and "total".
   - >-
-    How many errors did every service log? Go through the app log, count the ERROR-level lines per service, and give the grand total as well.
+    How many errors did every service log? Go through the app log, count the ERROR-level lines per service, and give the grand total as well. Put the per-service counts under "error_counts" and the total under "total".
 
 agents:
   - variant: a1

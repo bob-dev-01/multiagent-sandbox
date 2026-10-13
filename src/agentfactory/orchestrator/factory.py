@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 from agentfactory.contracts import AgentSpec, ValidationResult, Verdict
 from agentfactory.executor import DeploymentRefused, ExecutionRecord, TaskExecutor
+from agentfactory.generator.agent_generator import describe_shape
 from agentfactory.judge.evidence import tool_data
 from agentfactory.telemetry.events import EventLog, EventType
 from agentfactory.validation.sandbox.base import SandboxExecutionError, SandboxUnavailableError
@@ -217,6 +218,12 @@ class AgentFactory:
             # a fresh agent is always a safe fallback.
 
         feedback: str | None = None
+        # The interface of each tool — what a tool registry documents — so the
+        # generator does not have to guess field names. Shapes only, no data.
+        tool_shapes = {
+            name: describe_shape(response)
+            for name, response in tool_data(task.available_tools, task.tool_fixtures).items()
+        }
         for attempt in range(1, self.max_attempts + 1):
             result.attempts = attempt
             try:
@@ -229,6 +236,7 @@ class AgentFactory:
                         task_spec=task.description,
                         available_tools=task.available_tools,
                         failure_feedback=_feedback,
+                        tool_shapes=tool_shapes,
                     ),
                     what=f"generation attempt {attempt}",
                 )

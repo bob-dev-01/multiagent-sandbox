@@ -14,6 +14,7 @@ pipeline (architecture.md section 5.2).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -55,8 +56,48 @@ resources it needs, and the evidence it produces. Declare the minimum that does
 the job — the contract is enforced at runtime, so an under-declared agent fails
 and an over-declared one is rejected by policy.
 
+Each tool returns the same JSON-shaped value on every call; its shape is documented
+under TOOL INTERFACES. Return a dict whose keys are exactly the ones the task asks
+for, computed from what the tools return — never invented.
+
 Return only the structured object. Do not wrap the code in markdown fences.\
 """
+
+
+def _required_evidence() -> frozenset[str]:
+    from agentfactory.validation.layer2_policy import EnterprisePolicy
+
+    return EnterprisePolicy.load().required_evidence
+
+
+def describe_shape(value: Any) -> Any:
+    """A value's structure with the data removed: what a tool registry documents.
+
+    Lists are described by the union of their elements' shapes, so an optional
+    field present in only some items still appears.
+    """
+    if isinstance(value, dict):
+        return {k: describe_shape(v) for k, v in value.items()}
+    if isinstance(value, list):
+        if not value:
+            return []
+        merged: Any = None
+        for item in value:
+            shape = describe_shape(item)
+            if isinstance(merged, dict) and isinstance(shape, dict):
+                merged = {**merged, **{k: v for k, v in shape.items() if k not in merged}}
+            elif merged is None:
+                merged = shape
+        return [merged]
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if value is None:
+        return "null"
+    return "string"
 
 
 class GeneratedAgent(BaseModel):
@@ -104,7 +145,9 @@ class AgentGenerator:
         *,
         model: str = GENERATOR_MODEL,
         api_key: str | None = None,
-        max_tokens: int = 8000,
+        # Adaptive thinking at high effort shares this budget with the answer;
+        # too small a cap ends the turn before the code is written.
+        max_tokens: int = 16000,
         effort: str = "high",
     ) -> None:
         self.model = model
@@ -132,12 +175,18 @@ class AgentGenerator:
         task_spec: str,
         available_tools: list[str],
         failure_feedback: str | None,
+        tool_shapes: dict[str, Any] | None = None,
     ) -> str:
         parts = [
             f"TASK\n{task_spec}",
             "AVAILABLE TOOLS (you may declare only these)\n"
             + "\n".join(f"  - {t}" for t in available_tools),
         ]
+        if tool_shapes:
+            parts.append(
+                "TOOL INTERFACES (shape of each tool's return value; types, not data)\n"
+                + json.dumps(tool_shapes, indent=2)
+            )
         if failure_feedback:
             # Regeneration path. The feedback is validation output, not user
             # text, so it is labelled as such rather than blended into the task.
@@ -156,9 +205,11 @@ class AgentGenerator:
         task_spec: str,
         available_tools: list[str],
         failure_feedback: str | None = None,
+        tool_shapes: dict[str, Any] | None = None,
     ) -> GenerationResult:
         """Generate one agent for one task."""
         client = self._get_client()
+        prompt = self._prompt(task_spec, available_tools, failure_feedback, tool_shapes)
 
         try:
             parsed = client.messages.parse(
@@ -168,12 +219,7 @@ class AgentGenerator:
                 thinking={"type": "adaptive"},
                 output_config={"effort": self.effort},
                 output_format=GeneratedAgent,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": self._prompt(task_spec, available_tools, failure_feedback),
-                    }
-                ],
+                messages=[{"role": "user", "content": prompt}],
             )
         except Exception as exc:  # noqa: BLE001 — surfaced as a generation failure
             raise GenerationError(f"{type(exc).__name__}: {exc}") from exc
@@ -202,7 +248,14 @@ class AgentGenerator:
                 network_access=False,  # never negotiable; see architecture.md 10.1
                 max_duration_sec=draft.max_duration_sec,
             ),
-            evidence_requirements=tuple(draft.evidence_requirements),
+            # The evidence clauses the enterprise policy makes mandatory are part
+            # of every contract, like network_access=False above; the model may
+            # add to them but not leave them out. Without this, a model that
+            # declares no evidence gets a safe agent escalated as unsafe for a
+            # missing boilerplate clause.
+            evidence_requirements=tuple(sorted(
+                set(draft.evidence_requirements) | set(_required_evidence())
+            )),
             security_policy=SecurityPolicy(),
         )
 

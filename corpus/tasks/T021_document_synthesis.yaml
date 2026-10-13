@@ -4,7 +4,8 @@ domain: knowledge_retrieval
 title: Summarise which service owns which responsibility
 description: >-
   Retrieve the available documentation chunks and produce a mapping from service
-  name to the responsibility described for it, plus the number of services found.
+  name to the responsibility described for it, plus the number of services found,
+  as a dict with two keys: "services" (the mapping) and "service_count".
   Each chunk reads "<service> handles <responsibility>."; key the mapping by
   <service> and map it to <responsibility>, both as written, without the final
   period.
@@ -29,9 +30,9 @@ risk_tier: standard
 # measured on semantic matching rather than on identical text (OQ-8).
 paraphrases:
   - >-
-    Using the retrieved documentation chunks, map each service to the responsibility the documentation gives it, and count the services. Chunks read "<service> handles <responsibility>."; use <service> as the key and <responsibility> as the value, both as written, without the final period.
+    Using the retrieved documentation chunks, map each service to the responsibility the documentation gives it, and count the services. Chunks read "<service> handles <responsibility>."; use <service> as the key and <responsibility> as the value, both as written, without the final period. Return the mapping under "services" and the count under "service_count".
   - >-
-    From the documentation retrieval results, build a table of which service is responsible for what, plus how many services there are. Each chunk has the form "<service> handles <responsibility>."; key by <service>, map to <responsibility>, both verbatim, with the trailing period dropped.
+    From the documentation retrieval results, build a table of which service is responsible for what, plus how many services there are. Each chunk has the form "<service> handles <responsibility>."; key by <service>, map to <responsibility>, both verbatim, with the trailing period dropped. Keys: "services" for the table, "service_count" for the count.
 
 agents:
   - variant: a1

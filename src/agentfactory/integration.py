@@ -23,6 +23,7 @@ Each seed is an independent replicate: a fresh registry, a fresh order.
 
 from __future__ import annotations
 
+import json
 import random
 import statistics
 import uuid
@@ -79,6 +80,66 @@ class CorpusReplayGenerator:
         self.served[spec.agent_id] = agent
         return ReplayGeneration(spec=spec)
 
+    def label_for(self, agent_id: uuid.UUID) -> str | None:
+        agent = self.served.get(agent_id)
+        return agent.label.value if agent else None
+
+    exhausted = False
+
+
+class BudgetExhausted(RuntimeError):
+    """The live generator's spending cap was reached; the run stops cleanly."""
+
+
+class LiveGenerator:
+    """The real generator, with a spending cap and a record of everything it made.
+
+    Generated agents carry no ground-truth label, so safety metrics computed
+    against labels do not apply to them; what is measured is how the pipeline
+    and executor treat them. Every agent is written to `sink` in full — source,
+    contract, cost — because judging their correctness (H3) and what strictness
+    costs on them (RQ4) needs the code itself, later.
+    """
+
+    def __init__(self, inner: Any, *, budget_usd: float, sink: Any = None) -> None:
+        self.inner = inner
+        self.budget_usd = budget_usd
+        self.sink = sink
+        self.spent_usd = 0.0
+        self.calls = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.spent_usd >= self.budget_usd
+
+    def label_for(self, agent_id: uuid.UUID) -> str | None:
+        return None
+
+    def generate(self, *, task_id: str, task_spec: str, **kwargs: Any) -> Any:
+        if self.exhausted:
+            raise BudgetExhausted(f"budget of ${self.budget_usd:.2f} reached")
+        result = self.inner.generate(task_id=task_id, task_spec=task_spec, **kwargs)
+        self.calls += 1
+        self.spent_usd += result.cost_usd
+        if self.sink is not None:
+            spec = result.spec
+            self.sink.write(json.dumps({
+                "agent_id": str(spec.agent_id),
+                "task_id": task_id,
+                "task_spec": task_spec,
+                "regeneration": bool(kwargs.get("failure_feedback")),
+                "code_sha256": spec.code_sha256,
+                "model": result.model,
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "cost_usd": round(result.cost_usd, 6),
+                "authorized_tools": list(spec.contract.authorized_tools),
+                "reasoning": result.reasoning,
+                "source": spec.source,
+            }) + "\n")
+            self.sink.flush()
+        return result
+
 
 @dataclass(frozen=True)
 class TaskRecord:
@@ -97,6 +158,8 @@ class TaskRecord:
     refusals: tuple[str, ...]
     executed_labels: tuple[str, ...]
     executed_unsafe: bool
+    cost_usd: float = 0.0
+    verdicts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -116,6 +179,8 @@ class PhaseSummary:
 class IntegrationResult:
     records: list[TaskRecord] = field(default_factory=list)
     observations: list[Observation] = field(default_factory=list)
+    # Set when a live run stopped early because its budget ran out.
+    stopped: str | None = None
 
     def phase(self, name: str) -> PhaseSummary:
         rows = [r for r in self.records if r.phase == name]
@@ -154,18 +219,26 @@ class IntegrationResult:
         return safety_metrics(self.observations)
 
     def as_dict(self) -> dict[str, Any]:
-        safety = self.safety()
-        return {
+        verdicts: dict[str, int] = {}
+        for r in self.records:
+            for v in r.verdicts:
+                verdicts[v] = verdicts.get(v, 0) + 1
+        out: dict[str, Any] = {
             "phases": {name: asdict(self.phase(name)) for name in (COLD, WARM)},
-            "safety": {
-                **asdict(safety),
-                "udr_fnr_gap": safety.udr_fnr_gap,
-            },
-            "n_validations": len(self.observations),
+            "verdicts": verdicts,
+            "executions_unsafe": sum(r.executed_unsafe for r in self.records),
+            "cost_usd": round(sum(r.cost_usd for r in self.records), 4),
+            "stopped": self.stopped,
         }
+        # Safety against ground truth only exists for labelled agents.
+        if self.observations:
+            safety = self.safety()
+            out["safety"] = {**asdict(safety), "udr_fnr_gap": safety.udr_fnr_gap}
+            out["n_validations"] = len(self.observations)
+        return out
 
 
-FactoryBuilder = Callable[[CorpusReplayGenerator], AgentFactory]
+FactoryBuilder = Callable[[Any], AgentFactory]
 
 
 def run_integration(
@@ -174,6 +247,7 @@ def run_integration(
     *,
     seeds: Sequence[int],
     on_record: Callable[[TaskRecord], None] | None = None,
+    make_generator: Callable[[int], Any] | None = None,
 ) -> IntegrationResult:
     """Cold pass on the original tasks, then a warm pass on their paraphrases.
 
@@ -183,7 +257,8 @@ def run_integration(
     """
     out = IntegrationResult()
     for seed in seeds:
-        generator = CorpusReplayGenerator(tasks, seed)
+        generator = (make_generator(seed) if make_generator is not None
+                     else CorpusReplayGenerator(tasks, seed))
         factory = build_factory(generator)
         if factory.executor is None:
             raise ValueError("the integration test needs a factory with a Task Executor")
@@ -200,6 +275,10 @@ def run_integration(
         submissions += warm
 
         for phase, task, paraphrase, description in submissions:
+            if generator.exhausted:
+                out.stopped = (f"budget reached at seed {seed} before {phase} "
+                               f"{task.task_id}; later submissions not run")
+                break
             result = factory.handle_task(
                 TaskSpecification(
                     task_id=task.task_id,
@@ -218,12 +297,14 @@ def run_integration(
                 on_record(row)
 
             for validation in result.history:
-                agent = generator.served[validation.agent_id]
+                label = generator.label_for(validation.agent_id)
+                if label is None:
+                    continue  # a generated agent: no ground truth to score against
                 out.observations.append(
                     Observation(
                         agent_id=str(validation.agent_id),
                         task_id=task.task_id,
-                        ground_truth=GroundTruth(agent.label.value),
+                        ground_truth=GroundTruth(label),
                         verdict=validation.verdict,
                         isolation_level=validation.isolation_level.value,
                         latency_ms=validation.total_latency_ms,
@@ -241,6 +322,8 @@ def run_integration(
             out.observations[index] = Observation(
                 **{**asdict(obs), "reached_execution": bool(runs), "executed_unsafely": any(runs)}
             )
+        if out.stopped:
+            break
     return out
 
 
@@ -250,12 +333,9 @@ def _record(
     task: CorpusTask,
     paraphrase: int | None,
     result: TaskResult,
-    generator: CorpusReplayGenerator,
+    generator: Any,
 ) -> TaskRecord:
-    labels = []
-    for execution in result.executions:
-        agent = generator.served.get(execution.agent_id)
-        labels.append(agent.label.value if agent else "unknown")
+    labels = [generator.label_for(e.agent_id) or "generated" for e in result.executions]
     return TaskRecord(
         seed=seed,
         phase=phase,
@@ -270,4 +350,6 @@ def _record(
         refusals=tuple(result.refusals),
         executed_labels=tuple(labels),
         executed_unsafe=any(e.unsafe for e in result.executions),
+        cost_usd=result.cost_usd,
+        verdicts=tuple(v.verdict.value for v in result.history),
     )

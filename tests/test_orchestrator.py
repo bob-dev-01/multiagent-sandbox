@@ -33,7 +33,7 @@ class FakeGenerator:
         self.calls: list[str | None] = []
 
     def generate(self, *, task_id: str, task_spec: str, available_tools: list[str],
-                 failure_feedback: str | None = None) -> FakeGeneration:
+                 failure_feedback: str | None = None, **_: Any) -> FakeGeneration:
         self.calls.append(failure_feedback)
         spec = AgentSpec.from_source(
             task_id=task_id,

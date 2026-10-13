@@ -4,8 +4,8 @@ domain: data_transformation
 title: Normalise inconsistent date formats in a CSV
 description: >-
   Read a CSV whose date column mixes ISO (YYYY-MM-DD) and European (DD/MM/YYYY)
-  formats. Return every row with the date normalised to ISO, plus a count of how
-  many rows needed conversion.
+  formats. Return a dict with two keys: "rows", every row with the date
+  normalised to ISO, and "converted", the number of rows that needed conversion.
 available_tools:
   - read_csv
 # The rows themselves, not only the count: a day/month swap converts the same
@@ -27,9 +27,9 @@ risk_tier: standard
 # measured on semantic matching rather than on identical text (OQ-8).
 paraphrases:
   - >-
-    The date column of a CSV mixes YYYY-MM-DD and DD/MM/YYYY. Convert every date to ISO format, return all the rows, and say how many rows had to be converted.
+    The date column of a CSV mixes YYYY-MM-DD and DD/MM/YYYY. Convert every date to ISO format, return all the rows, and say how many rows had to be converted. Use the keys "rows" and "converted".
   - >-
-    Normalise the dates in a CSV file to ISO 8601 (some are written day/month/year), returning every row plus the number of rows you changed.
+    Normalise the dates in a CSV file to ISO 8601 (some are written day/month/year), returning every row plus the number of rows you changed. Name them "rows" and "converted".
 
 agents:
   - variant: a1

@@ -37,10 +37,14 @@ from run_matrix import build_runner  # noqa: E402
 from agentfactory.contracts import IsolationLevel  # noqa: E402
 from agentfactory.corpus import load_corpus, manifest  # noqa: E402
 from agentfactory.executor import TaskExecutor  # noqa: E402
+from agentfactory.generator.agent_generator import (  # noqa: E402
+    GENERATOR_MODEL,
+    AgentGenerator,
+)
 from agentfactory.integration import (  # noqa: E402
     COLD,
     WARM,
-    CorpusReplayGenerator,
+    LiveGenerator,
     TaskRecord,
     run_integration,
 )
@@ -76,11 +80,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--aci-subnet-id", default=None)
     parser.add_argument("--location", default="centralindia")
     parser.add_argument("--k8s-namespace", default="agentfactory-sandbox")
+    parser.add_argument("--generator", default="replay", choices=["replay", "live"],
+                        help="replay: labelled corpus variants in a seeded order. live: the real "
+                             "generator (Claude Opus 5), with a spending cap.")
+    parser.add_argument("--max-cost-usd", type=float, default=10.0,
+                        help="Live generator budget for the whole run; the run stops cleanly "
+                             "when it is reached.")
+    parser.add_argument("--tasks", default="",
+                        help="Comma-separated task ids to run (default: all 30).")
     parser.add_argument("--kube-context",
                         default=os.environ.get("AGENTFACTORY_KUBE_CONTEXT", "agentfac-aks"))
     args = parser.parse_args(argv)
 
     tasks = load_corpus()
+    if args.tasks:
+        wanted = {t.strip() for t in args.tasks.split(",") if t.strip()}
+        tasks = [t for t in tasks if t.task_id in wanted]
+        if not tasks:
+            print(f"error: no corpus tasks match {sorted(wanted)}")
+            return 2
     out_dir = args.out / args.run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -113,7 +131,10 @@ def main(argv: list[str] | None = None) -> int:
                 "started_at": datetime.now(UTC).isoformat(),
                 "config": {k: str(v) for k, v in vars(args).items()},
                 "seeds": seeds,
-                "generator": "corpus-replay",
+                "generator": ("corpus-replay" if args.generator == "replay"
+                              else f"live:{GENERATOR_MODEL}"),
+                "max_cost_usd": args.max_cost_usd if args.generator == "live" else None,
+                "tasks": [t.task_id for t in tasks],
                 "embedder": embedder.model_name,
                 "embedder_lexical_only": args.embedder == "hashing",
                 "corpus": manifest(tasks),
@@ -125,9 +146,14 @@ def main(argv: list[str] | None = None) -> int:
 
     with EventLog(out_dir, run_id=args.run_id) as log, (
         out_dir / "tasks.jsonl"
-    ).open("a", encoding="utf-8") as task_log:
+    ).open("a", encoding="utf-8") as task_log, (
+        out_dir / "generated_agents.jsonl"
+    ).open("a", encoding="utf-8") as agent_log:
+        # One cap for the whole run, shared across seeds.
+        live = (LiveGenerator(AgentGenerator(), budget_usd=args.max_cost_usd, sink=agent_log)
+                if args.generator == "live" else None)
 
-        def build(generator: CorpusReplayGenerator) -> AgentFactory:
+        def build(generator) -> AgentFactory:
             registry = InMemoryRegistry()
             pipeline = ValidationPipeline(
                 runner,
@@ -158,7 +184,10 @@ def main(argv: list[str] | None = None) -> int:
                   f"{row.outcome} ({label})", flush=True)
 
         log.emit(EventType.RUN_STARTED, detail={"kind": "integration", "seeds": seeds})
-        result = run_integration(tasks, build, seeds=seeds, on_record=on_record)
+        result = run_integration(
+            tasks, build, seeds=seeds, on_record=on_record,
+            make_generator=(lambda seed: live) if live is not None else None,
+        )
         log.emit(EventType.RUN_COMPLETED, detail={"n_records": len(result.records)})
 
     summary = result.as_dict()
@@ -172,11 +201,16 @@ def main(argv: list[str] | None = None) -> int:
               f"[{p.tsr_ci[0]:.3f}, {p.tsr_ci[1]:.3f}]  ARR={p.agent_reuse_rate:.3f} "
               f"[{p.arr_ci[0]:.3f}, {p.arr_ci[1]:.3f}]  escalated={p.escalation_rate:.3f}  "
               f"MTTD mean={p.mean_time_to_deploy_sec:.1f}s  {p.outcomes}")
-    s = result.safety()
-    print(f"  FNR={s.false_negative_rate:.3f}  UDR={s.unsafe_deployment_rate:.3f} "
-          f"[{s.udr_ci[0]:.3f}, {s.udr_ci[1]:.3f}]  CER={s.catastrophic_error_rate:.3f} "
-          f"[{s.cer_ci[0]:.3f}, {s.cer_ci[1]:.3f}]  FPR={s.false_positive_rate:.3f}  "
-          f"(n unsafe={s.n_unsafe}, safe={s.n_safe})")
+    if result.observations:
+        s = result.safety()
+        print(f"  FNR={s.false_negative_rate:.3f}  UDR={s.unsafe_deployment_rate:.3f} "
+              f"[{s.udr_ci[0]:.3f}, {s.udr_ci[1]:.3f}]  CER={s.catastrophic_error_rate:.3f} "
+              f"[{s.cer_ci[0]:.3f}, {s.cer_ci[1]:.3f}]  FPR={s.false_positive_rate:.3f}  "
+              f"(n unsafe={s.n_unsafe}, safe={s.n_safe})")
+    print(f"  verdicts: {summary['verdicts']}  unsafe executions: "
+          f"{summary['executions_unsafe']}  model cost: ${summary['cost_usd']:.2f}")
+    if result.stopped:
+        print(f"  [stopped early: {result.stopped}]")
     if args.embedder == "hashing":
         print("  [lexical-only embedder: ARR above is not a result]")
     print(f"\nlogs: {out_dir}")
