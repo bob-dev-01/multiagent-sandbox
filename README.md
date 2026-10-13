@@ -23,14 +23,16 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 | Provisioning vs isolation | Container Instances: 43.5 s per validation, almost all provisioning; the same work on a warm AKS node: ~5 s | [Results](#results) |
 | End-to-end loop with execution | No unsafe deployment (UDR 0), no catastrophic error (CER 0) | [Integration test 1](#integration-test-1-2026-10-08) |
 | Reuse on reworded tasks | Close paraphrase reused 18/18, free paraphrase 0/18 at τ = 0.85 | [Integration test 1](#integration-test-1-2026-10-08) |
+| Live generator (Claude Opus 5), end to end | TSR 0.92 cold / 0.87 warm, ARR 0.51; 221 agents generated, none executed unsafely; $13.11 | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
+| What strictness costs on generated agents | PASS 192 permissive → 161 strict; 39 of the 42 strict rejections trace to a paraphrase that drops a constraint | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
 
 Progress against the experimental design:
 
 | Part | Done | Remaining |
 |---|---|---|
 | Validation matrix (30 tasks × 10 agents × 3 levels × 3 replicates = 2,700) | 2,700 (L1, L2, L3) | — |
-| Strictness sweep (RQ4) | all 2,700 cells × 4 profiles, replay verified | the cost side, with generated agents |
-| Integration test (RQ3) | corpus-replay generator, 10 seeds | live generator (Claude Opus 5) |
+| Strictness sweep (RQ4) | all 2,700 cells × 4 profiles, replay verified; 221 generated agents × 4 profiles | — |
+| Integration test (RQ3) | corpus-replay generator, 10 seeds; live generator (Claude Opus 5), 3 seeds | a rerun after the AF108 fix and the paraphrase repair |
 | Judge calibration (ADR-9) | blind scoring sheet and tooling | human scores, then κ |
 
 ---
@@ -277,8 +279,10 @@ back to generating a fresh agent; a refused fresh agent goes to a human.
 
 Two things to keep in mind when reading its numbers. The generator is a **replay of the corpus**
 — each request returns the next labelled variant in a seeded order — so the error profile is the
-corpus distribution, not a model's; wiring the live generator (`AgentGenerator`, Claude Opus 5)
-into this harness is the next step. And the warm pass needs the **real embedder** (`pip install -e ".[embeddings]"`); with
+corpus distribution, not a model's. `--generator live --max-cost-usd N` swaps in the real
+generator (`AgentGenerator`, Claude Opus 5) under a spending cap and writes every agent it makes,
+source included, to `generated_agents.jsonl`; `experiments/analyse_live_run.py` reads that back.
+And the warm pass needs the **real embedder** (`pip install -e ".[embeddings]"`); with
 `--embedder hashing` reuse is matched on words, the run is marked lexical-only, and its ARR is
 not a result.
 
@@ -454,6 +458,65 @@ What this says, and what it does not:
 - Reuse cuts time to deploy from ~8 s to ~50 ms: generation and validation are skipped entirely,
   which is also why the warm path's safety rests on the original verdict (section 9.2).
 
+### Integration test 2 — live generator (2026-10-13)
+
+`runs/integ2-live`, commit `420f296`: the same harness with Claude Opus 5 writing the agents,
+L2 for validation and execution, strict profile, all-MiniLM-L6-v2, 3 seeds (30 cold and 60 warm
+submissions each). 221 agents generated (30 of them regenerations after a failed verdict) for
+$13.11, about $0.06 an agent. One infrastructure failure: a DNS lookup of the AKS API failed once.
+Analysis: `python experiments/analyse_live_run.py runs/integ2-live`.
+
+| | Cold pass (n = 90) | Warm pass (n = 180) |
+|---|---|---|
+| TSR | **0.922** [0.848, 0.962] | 0.867 [0.809, 0.909] |
+| ARR | — | 0.506 [0.429, 0.584] |
+| Escalated | 0.078 | 0.128 |
+| Time to deploy, fresh agent | 23.3 s mean | 37.9 s mean |
+| Time to deploy, reused agent | — | 0.05 s mean |
+
+Verdicts: 161 PASS, 42 FAIL_INCORRECT, 18 FAIL_BOTH. **No agent executed unsafely**, and the
+deployment gate refused nothing. Generated agents carry no label, so FNR and UDR do not apply;
+what is measured is how the pipeline treated what a real model wrote.
+
+What this says:
+
+- **On the tasks' own wording the generator is reliable.** The 90 cold-pass verdicts are 83 PASS
+  and 7 FAIL_BOTH — not one FAIL_INCORRECT. All 42 FAIL_INCORRECT came from paraphrases.
+- **Every FAIL_BOTH was one mistake, and it exposed a gap in Layer 1.** In all 18 the model
+  declared `authorized_tools = []` and then used the task's tool. The sandbox caught each one as an
+  unauthorised tool call, so nothing unsafe ran — but Layer 1 should have. AF108 skipped its check
+  when the allowlist was empty (an empty list read as "anything goes"), and only looked at direct
+  calls, missing three agents that handed `tools.read_log_file` to a retry helper. Both are fixed:
+  an empty allowlist now authorises nothing, and any `tools.<name>` reference or literal
+  `getattr(tools, "<name>")` is checked. Re-run over the recorded agents, today's AF108 flags all
+  18 and none of the 203 others; it flags no safe corpus agent. The generator's schema now
+  requires `authorized_tools` instead of defaulting it to an empty list.
+- **The incorrect verdicts are the corpus's fault more than the model's.** 39 of the 42 come from
+  paraphrases that drop a constraint the original description states: T008 (18) and T004 (3)
+  never say which log field is the service, T016 paraphrase 1 (9) does not say the ids are
+  strings, T005 paraphrase 0 (9) does not say `services_with_errors` is a count. The model filled
+  the gap differently from the expected output, and strict rejected it. The remaining three
+  (T002, T010, T017, one each) are a wrong count, a wrong tie-break and a list returned in another
+  shape. Twelve warm submissions (T008 ×6, T016 ×3, T005 ×3) exhausted their regenerations this
+  way, which is most of the warm pass's lower TSR.
+- **RQ4's cost side, measured.** Re-judged under each profile (replay reproduces all 221 strict
+  verdicts first):
+
+  | Profile | PASS | FAIL_INCORRECT | FAIL_BOTH | FAIL_UNSAFE |
+  |---|---|---|---|---|
+  | permissive | 192 | 11 | 18 | 0 |
+  | balanced | 180 | 23 | 18 | 0 |
+  | strict | 161 | 42 | 18 | 0 |
+  | paranoid | 160 | 42 | 18 | 1 |
+
+  The 31 agents strict rejects and permissive accepts are, by the analysis above, agents whose
+  output really does differ from the specification — mostly because the specification they were
+  given was ambiguous. Strictness converts an ambiguous task into regenerations and escalations
+  rather than into wrong output in production. Paranoid's one extra rejection is an agent that
+  dispatches tools through `getattr(tools, name)`; it ran within its allowlist.
+
+---
+
 ### Full-corpus run 1 (2026-10-12)
 
 `runs/full2-l2l3`, commit `885742d`: all 30 tasks, 300 agents × L2, L3 × 3 replicates = 1,800
@@ -615,12 +678,12 @@ Honest list, so nobody discovers these the hard way:
 - **The LLM judge is not calibrated.** The blind scoring sheet and the comparison script exist
   (`experiments/build_calibration_sheet.py`, `experiments/calibrate_judge.py`); the human scores
   do not yet. Until κ ≥ 0.80 the judge does not score unattended (ADR-9).
-- **The integration test still uses the corpus-replay generator**, so its TSR and escalation
-  rate describe the corpus, not a model. The live generator has its key and model pinned but is
-  not yet wired into the harness.
-- **The cost side of RQ4 is unmeasured.** The sweep shows strictness stopping incorrect agents
-  at no cost, because every correct corpus agent matches exactly; what strictness costs on
-  generated agents needs the live generator.
+- **Five paraphrases are underspecified** (T004 p1, T005 p0, T008 p0 and p1, T016 p1): they
+  drop a constraint the original states, which the live run turned into 39 FAIL_INCORRECT
+  verdicts. Repairing them changes the paraphrase text, so integration test 1's reuse figures
+  belong to the corpus as it was then.
+- **The live run has not been repeated with the AF108 fix**; its 18 FAIL_BOTH verdicts would now
+  be caught at Layer 1 rather than in the sandbox.
 - **The registry schema has not been applied** to the deployed PostgreSQL server. The
   integration harness uses the in-process registry, which enforces the same rules.
 - **The Task Executor is not wrapped in AutoGen**, which the research plan names; it is plain
