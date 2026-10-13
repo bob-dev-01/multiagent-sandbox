@@ -6,9 +6,9 @@ is **safe to deploy** and **correct enough to be useful** before it executes.
 
 Master's research, Solution Architecture and Data Engineering — Bobur Yusupov, IT Park University.
 
-> **Status (2026-10-12): deployed; first full-corpus run complete.** The labelled corpus is
-> complete at 30 tasks and 300 agents, and 1,800 of the experiment's 2,700 validation runs are
-> done (L2 and L3; L1 is still to run on the orchestrator VM). The corpus labels still await the
+> **Status (2026-10-13): deployed; the validation matrix is complete.** The labelled corpus is
+> complete at 30 tasks and 300 agents, and all 2,700 validation runs of the experimental design
+> are done (L1 on the orchestrator VM; L2 and L3 on AKS). The corpus labels still await the
 > second reviewer and the LLM judge is not yet calibrated, so these are measurements, not yet
 > thesis results.
 
@@ -16,8 +16,9 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 
 | What | Result | Where |
 |---|---|---|
-| Classification, full corpus, L2 and L3 | Every one of 1,800 verdicts matches its label; FNR 0 (95% upper bound 0.7%), FPR 0 | [Full-corpus run 1](#full-corpus-run-1-2026-10-12) |
+| Classification, full corpus, all three levels | Every one of 2,700 verdicts matches its label; FNR 0 (95% upper bound 0.5%), FPR 0 | [Full-corpus run 1](#full-corpus-run-1-2026-10-12), [L1](#full-corpus-run-1-l1-2026-10-13) |
 | Cost of gVisor (L3 vs L2) | +77.5 ms on sandbox start-up (CI 76–79); +127 ms on a ~5.4 s validation, ≈2.4% | [Full-corpus run 1](#full-corpus-run-1-2026-10-12) |
+| L1 vs the container levels | Sandbox stage 47 ms at L1 vs ~5.3–5.5 s at L2/L3 — about 110× faster, at the price of sharing the host kernel | [L1](#full-corpus-run-1-l1-2026-10-13) |
 | Provisioning vs isolation | Container Instances: 43.5 s per validation, almost all provisioning; the same work on a warm AKS node: ~5 s | [Results](#results) |
 | End-to-end loop with execution | No unsafe deployment (UDR 0), no catastrophic error (CER 0) | [Integration test 1](#integration-test-1-2026-10-08) |
 | Reuse on reworded tasks | Close paraphrase reused 18/18, free paraphrase 0/18 at τ = 0.85 | [Integration test 1](#integration-test-1-2026-10-08) |
@@ -26,7 +27,7 @@ Progress against the experimental design:
 
 | Part | Done | Remaining |
 |---|---|---|
-| Validation matrix (30 tasks × 10 agents × 3 levels × 3 replicates = 2,700) | 1,800 (L2, L3) | 900 at L1, on the orchestrator VM |
+| Validation matrix (30 tasks × 10 agents × 3 levels × 3 replicates = 2,700) | 2,700 (L1, L2, L3) | — |
 | Strictness sweep (RQ4) | — | recomputable offline from the run records |
 | Integration test (RQ3) | corpus-replay generator, 10 seeds | live generator (Claude Opus 5) |
 | Judge calibration (ADR-9) | blind scoring sheet and tooling | human scores, then κ |
@@ -496,6 +497,36 @@ CI, Mann–Whitney p):
 - `running` collapsed into `terminated` in 73% of runs; `apply → terminated` remains the exact
   end-to-end figure.
 
+### Full-corpus run 1, L1 (2026-10-13)
+
+`full2-l1`, commit `4a3081c`, on the orchestrator VM (`Standard_B2s_v2`, Ubuntu 24.04, kernel
+`6.17.0-1022-azure`), run as the unprivileged admin user with `--require-seccomp`: the same 300
+agents × 3 replicates, strict profile, bandit on. 900 cells in under three minutes, no
+infrastructure failures. The VM has no inbound access, so the run was driven through
+`az vm run-command`; the raw logs went to Blob (`validation-logs/full2-l1/`) with the VM's
+managed identity, and a summary plus the sandbox latencies were brought back
+(`runs/full2-l1/summary.json`, `l1_sandbox_wall_ms.csv`). The VM's CPU-credit balance stayed at
+61.6–62.3 during the run.
+
+| Label | n | Verdict |
+|---|---|---|
+| safe_correct | 450 | PASS 450 |
+| incorrect_only | 180 | FAIL_INCORRECT 180 |
+| unsafe_only | 180 | FAIL_UNSAFE 180 |
+| both | 90 | FAIL_UNSAFE 90 |
+
+- **The seccomp filter was in force on every sandbox run** (630 of 630), every run saw the host
+  kernel, and every verdict matches its label. Across all three levels that is 2,700 verdicts
+  without an error: FNR 0 over 810 unsafe cells (95% upper bound 0.5%), FPR 0 over 1,890.
+- **L1's sandbox stage takes 47 ms at the median** (p95 49 ms), against 5.32 s at L2 and
+  5.45 s at L3: no pod to schedule, no container to create, no kubectl to start. The price is
+  the boundary — the agent shares the host kernel, guarded only by the syscall filter and
+  rlimits.
+- The agent's own runtime is higher at L1 (1.3 ms vs 0.3–0.4 ms in the containers), on
+  different hardware and with the filter active; it is still too short to matter.
+- As at L2 and L3, every unsafe agent was stopped by Layers 1-2, so the isolation level could
+  not change FNR here (H_2).
+
 ---
 
 ## Deployed environment
@@ -549,8 +580,6 @@ Honest list, so nobody discovers these the hard way:
   right answer to its description, and that unsafe_only agents are otherwise correct — is the
   reviewer's job. Every injected violation is a plain pattern Layers 1-2 recognise, so FNR does
   not vary by isolation level on this corpus (H_2, open).
-- **L1 has not run in the full experiment.** It needs Linux (rlimits, seccomp), so it runs on the
-  orchestrator VM: 900 of the 2,700 planned validations.
 - **The LLM judge is not calibrated.** The blind scoring sheet and the comparison script exist
   (`experiments/build_calibration_sheet.py`, `experiments/calibrate_judge.py`); the human scores
   do not yet. Until κ ≥ 0.80 the judge does not score unattended (ADR-9).
