@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
 
-from agentfactory.contracts import AgentSpec, ValidationResult, Verdict
+from agentfactory.contracts import AgentSpec, ExecutionTrace, ValidationResult, Verdict
 from agentfactory.executor import DeploymentRefused, ExecutionRecord, TaskExecutor
 from agentfactory.generator.agent_generator import describe_shape
 from agentfactory.judge.evidence import tool_data
@@ -97,6 +97,9 @@ class TaskSpecification:
     task_input: dict[str, Any] = field(default_factory=lambda: {"case": 1})
     # What the task's tools return; empty means the harness's generic stubs.
     tool_fixtures: dict[str, Any] = field(default_factory=dict)
+    # Task-specific scoring guide for the judge, when the task has one (corpus
+    # tasks do). The judge is calibrated with it, so it is given it here too.
+    correctness_rubric: str | None = None
 
 
 class Registry(Protocol):
@@ -263,14 +266,14 @@ class AgentFactory:
                 detail={"attempt": attempt, "cost_usd": round(generation.cost_usd, 6)},
             )
 
-            correctness, source = self._grade(spec, task)
             try:
                 validation = self.pipeline.validate(
                     spec,
                     expected_output=task.expected_output,
-                    correctness_score=correctness,
-                    correctness_source=source,
                     tool_fixtures=task.tool_fixtures,
+                    # Graded after the sandbox, on the trace: the judge sees
+                    # what the agent did, as it does in calibration.
+                    grade=lambda trace, spec=spec: self._grade(spec, task, trace),
                 )
             except (SandboxExecutionError, SandboxUnavailableError) as exc:
                 return self._infrastructure_failure(result, task, "validation", exc)
@@ -475,14 +478,22 @@ class AgentFactory:
 
     # ------------------------------------------------------------ parts
 
-    def _grade(self, spec: AgentSpec, task: TaskSpecification) -> tuple[float | None, str | None]:
-        """Correctness score from the judge, when the judge is allowed to speak."""
+    def _grade(
+        self, spec: AgentSpec, task: TaskSpecification, trace: ExecutionTrace | None
+    ) -> tuple[float | None, str | None]:
+        """Correctness score from the judge, when the judge is allowed to speak.
+
+        Given the same evidence a human rater gets on the calibration sheet:
+        the code, what the tools return, the expected output, the task's own
+        scoring guide when it has one, and the sandbox run.
+        """
         if self.judge is None:
             return None, None
         try:
             judgement = _retry_api(
                 lambda: self.judge.score(
-                    spec, None, task.expected_output,
+                    spec, trace, task.expected_output,
+                    task_rubric=task.correctness_rubric,  # as calibrate_judge.py passes it
                     tools_return=tool_data(task.available_tools, task.tool_fixtures),
                 ),
                 what="judge",

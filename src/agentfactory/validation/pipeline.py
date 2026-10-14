@@ -15,12 +15,13 @@ those populations separate rather than averaging over them.
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from agentfactory.contracts import (
     AgentSpec,
+    ExecutionTrace,
     IsolationLevel,
     LayerReport,
     ValidationLayer,
@@ -151,8 +152,17 @@ class ValidationPipeline:
         correctness_score: float | None = None,
         correctness_source: str | None = None,
         tool_fixtures: dict[str, Any] | None = None,
+        grade: Callable[[ExecutionTrace | None], tuple[float | None, str | None]] | None = None,
     ) -> ValidationResult:
-        """Run the full pipeline for one agent and return the verdict."""
+        """Run the full pipeline for one agent and return the verdict.
+
+        `grade`, when given, is called once the sandbox has run, with the trace
+        the verdict is based on, and returns (correctness score, its source).
+        That is where the LLM judge belongs: it then sees what the agent did,
+        as it does when calibrated against human scores. An agent stopped
+        before the sandbox is not graded; it is unsafe, and its correctness
+        changes nothing.
+        """
         reports: list[LayerReport] = []
 
         static = analyse(spec.source, spec.contract, use_bandit=self.config.use_bandit)
@@ -194,6 +204,8 @@ class ValidationPipeline:
                     "trace": sandbox.trace.model_dump(mode="json") if sandbox.trace else None
                 },
             )
+            if grade is not None and correctness_score is None:
+                correctness_score, correctness_source = grade(sandbox.trace)
 
         result = aggregate(
             spec,

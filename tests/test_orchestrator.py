@@ -54,6 +54,8 @@ class FakePipeline:
     def validate(self, spec: AgentSpec, **kwargs: Any) -> ValidationResult:
         verdict = self.verdicts[min(self.calls, len(self.verdicts) - 1)]
         self.calls += 1
+        if kwargs.get("grade") is not None:
+            kwargs["grade"](None)  # as the real pipeline does after its sandbox
         return ValidationResult(
             agent_id=spec.agent_id,
             task_id=spec.task_id,
@@ -225,7 +227,10 @@ def test_generation_failure_is_reported_not_raised(task: TaskSpecification) -> N
 
 def test_judge_failure_does_not_fail_the_task(task: TaskSpecification) -> None:
     class BrokenJudge:
+        calls = 0
+
         def score(self, *args: Any, **kwargs: Any) -> Any:
+            BrokenJudge.calls += 1
             raise RuntimeError("judge is not calibrated")
 
     factory = AgentFactory(
@@ -234,3 +239,35 @@ def test_judge_failure_does_not_fail_the_task(task: TaskSpecification) -> None:
         judge=BrokenJudge(),
     )
     assert factory.handle_task(task).outcome is Outcome.GENERATED_AND_DEPLOYED
+    assert BrokenJudge.calls > 0
+
+
+def test_judge_sees_the_sandbox_run_and_the_task_rubric(local_runner) -> None:
+    """The judge gets what a human rater gets on the calibration sheet."""
+    from agentfactory.validation.pipeline import PipelineConfig, ValidationPipeline
+
+    seen: list[dict[str, Any]] = []
+
+    @dataclass
+    class Judgement:
+        score: int = 3
+
+    class RecordingJudge:
+        def score(self, spec, trace, expected_output, **kwargs: Any) -> Judgement:
+            seen.append({"trace": trace, **kwargs})
+            return Judgement()
+
+    task = TaskSpecification(
+        task_id="T-judge", description="return a total", available_tools=["read_log_file"],
+        expected_output={"attempt": 1}, correctness_rubric="3 = right. 0 = wrong.",
+    )
+    factory = AgentFactory(
+        generator=FakeGenerator(),
+        pipeline=ValidationPipeline(local_runner, PipelineConfig.default(use_bandit=False)),
+        judge=RecordingJudge(),
+    )
+    factory.handle_task(task)
+    assert len(seen) == 1
+    assert seen[0]["trace"] is not None and seen[0]["trace"].agent_output == {"attempt": 1}
+    assert seen[0]["task_rubric"] == "3 = right. 0 = wrong."
+    assert "read_log_file" in seen[0]["tools_return"]

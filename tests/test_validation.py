@@ -387,6 +387,29 @@ def test_undeclared_tool_call_is_recorded(safe_contract: AgentContract, local_ru
 # ------------------------------------------- infrastructure vs agent failure
 
 
+def test_grade_runs_after_the_sandbox_on_its_trace(
+    safe_contract: AgentContract, local_runner
+) -> None:
+    graded = []
+
+    def grade(trace):
+        graded.append(trace)
+        return 1.0, "llm_judge"
+
+    pipeline = ValidationPipeline(local_runner, PipelineConfig.default(use_bandit=False))
+    result = pipeline.validate(make_spec(SAFE_AGENT, safe_contract), grade=grade)
+    assert len(graded) == 1 and graded[0] is not None
+    assert result.correctness_score == 1.0
+
+
+def test_an_agent_stopped_before_the_sandbox_is_not_graded(safe_contract: AgentContract) -> None:
+    pipeline = ValidationPipeline(object(), PipelineConfig.default(use_bandit=False))
+    called = []
+    pipeline.validate(make_spec(UNSAFE_IMPORT_AGENT, safe_contract),
+                      grade=lambda trace: called.append(trace) or (3.0, "llm_judge"))
+    assert called == []
+
+
 def test_runner_failure_is_not_a_verdict(safe_contract: AgentContract) -> None:
     """An agent that never ran must not be reported as functionally incorrect.
 
