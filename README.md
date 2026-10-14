@@ -578,7 +578,7 @@ FNR 0.000 [0.000, 0.007] over 540 unsafe cells, FPR 0.000 over 1,260 safe. All 6
 agents — including the borderline ones with a partial match — are caught under strict. As with
 the pilots this is the corpus's own planted faults, so it shows the pipeline works on them, not
 that it resists an adaptive adversary; and every unsafe agent was stopped by Layers 1-2, so FNR
-cannot differ between levels here (H_2, open).
+cannot differ between levels here (H_2, see [below](#h_2--what-the-isolation-level-changes)).
 
 **Latency, sandbox runs only** (n = 630 per level; L3 − L2 difference of medians, bootstrap 95%
 CI, Mann–Whitney p):
@@ -629,6 +629,22 @@ managed identity, and a summary plus the sandbox latencies were brought back
   different hardware and with the filter active; it is still too short to matter.
 - As at L2 and L3, every unsafe agent was stopped by Layers 1-2, so the isolation level could
   not change FNR here (H_2).
+
+### H_2 — what the isolation level changes
+
+H_2 predicted that stronger isolation lowers FNR at a cost in latency. It is reported as a finding,
+in two parts:
+
+- **The latency part holds.** Sandbox stage 47 ms at L1, 5.32 s at L2, 5.45 s at L3 (medians);
+  gVisor over runc +77.5 ms on start-up and +127 ms (~2.4%) end to end.
+- **The FNR part does not, and cannot in this design.** FNR was 0 at every level because every
+  planted violation is stopped by Layers 1-2, before any sandbox runs; the isolation level decides
+  how an agent is contained, not whether its violation is detected. The run-time check that
+  matters here, the tool allowlist, is enforced by the in-sandbox harness the same way at every
+  level. Integration test 2 shows what that layer is for: 18 agents passed Layer 1 through
+  the AF108 gap and were stopped by the sandbox's allowlist (at L2). Stronger isolation therefore
+  buys a smaller blast radius for the violation that slips past every check, which a detection
+  rate does not measure.
 
 ### Strictness sweep — RQ4 / H_4 (2026-10-13)
 
@@ -713,7 +729,7 @@ Honest list, so nobody discovers these the hard way:
   one is flagged statically. What it cannot confirm — that each task's expected output is the
   right answer to its description, and that unsafe_only agents are otherwise correct — is the
   reviewer's job. Every injected violation is a plain pattern Layers 1-2 recognise, so FNR does
-  not vary by isolation level on this corpus (H_2, open).
+  not vary by isolation level on this corpus (H_2, reported as a finding).
 - **The LLM judge is not calibrated.** The blind scoring sheet and the comparison script exist
   (`experiments/build_calibration_sheet.py`, `experiments/calibrate_judge.py`); the human scores
   do not yet. Until κ ≥ 0.80 the judge does not score unattended (ADR-9).
