@@ -775,9 +775,12 @@ Honest list, so nobody discovers these the hard way:
   right answer to its description, and that unsafe_only agents are otherwise correct — is the
   reviewer's job. Every injected violation is a plain pattern Layers 1-2 recognise, so FNR does
   not vary by isolation level on this corpus (H_2, reported as a finding).
-- **The LLM judge is not calibrated.** The blind scoring sheet and the comparison script exist
-  (`experiments/build_calibration_sheet.py`, `experiments/calibrate_judge.py`); the human scores
-  do not yet. Until κ ≥ 0.80 the judge does not score unattended (ADR-9).
+- **The LLM judge is not calibrated.** The blind scoring sheet is a stratified sample of 60
+  agents — one safe_correct and one incorrect_only from each of the 30 tasks, with execution
+  evidence from full-corpus run 1 (`build_calibration_sheet.py --evidence runs/full2-l2l3
+  --per-task safe_correct=1,incorrect_only=1`); the human scores do not exist yet. Unsafe agents
+  are left out because their correctness score never changes a decision. Until κ ≥ 0.80 the judge
+  does not score unattended (ADR-9).
 - **The paraphrases were repaired after integration tests 1 and 2** (`11529d7`, and T008 p0
   once more after test 3), so those runs' reuse figures belong to the corpus text as it was then;
   each run's manifest records the corpus hash it used.

@@ -70,6 +70,18 @@ def test_every_corpus_agent_is_an_item_in_a_seeded_order(items) -> None:
     assert [i.agent_key for i in items] != [i.agent_key for i in other]
 
 
+def test_stratified_sample_takes_the_asked_labels_from_every_task() -> None:
+    per_task = {"safe_correct": 1, "incorrect_only": 1}
+    sample = build_items(TASKS, {}, seed=1, evidence_source="test", per_task=per_task)
+    assert len(sample) == 2 * len(TASKS)
+    for task in TASKS:
+        labels = sorted(i.label for i in sample if i.task_id == task.task_id)
+        assert labels == ["incorrect_only", "safe_correct"]
+    again = build_items(TASKS, {}, seed=1, evidence_source="test", per_task=per_task)
+    assert [i.agent_key for i in sample] == [i.agent_key for i in again]
+    assert [i.item_id for i in sample][:2] == ["C01", "C02"]
+
+
 def test_rows_carry_no_label_and_no_safety_evidence(items) -> None:
     for item in items:
         text = " ".join(str(v) for v in item_row(item))

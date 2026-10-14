@@ -93,14 +93,29 @@ def build_items(
     *,
     seed: int,
     evidence_source: str,
+    per_task: Mapping[str, int] | None = None,
 ) -> list[CalibrationItem]:
-    """Every corpus agent as a blind item, in a seeded random order."""
+    """Corpus agents as blind items, in a seeded random order.
+
+    With `per_task`, a stratified sample: that many agents of each label from
+    every task, drawn with the same seed (e.g. {"safe_correct": 1,
+    "incorrect_only": 1} gives two items per task). Without it, every agent.
+    """
+    rng = random.Random(seed)
     pending = []
     for task in tasks:
-        for agent in task.agents:
-            trace = traces.get(agent.source_sha256)
-            pending.append((task, agent, trace))
-    random.Random(seed).shuffle(pending)
+        agents = list(task.agents)
+        if per_task is not None:
+            chosen = []
+            for label, n in per_task.items():
+                pool = [a for a in agents if a.label.value == label]
+                if len(pool) < n:
+                    raise ValueError(f"{task.task_id} has {len(pool)} {label} agents, need {n}")
+                chosen += rng.sample(pool, n)
+            agents = chosen
+        for agent in agents:
+            pending.append((task, agent, traces.get(agent.source_sha256)))
+    rng.shuffle(pending)
 
     width = len(str(len(pending)))
     items = []

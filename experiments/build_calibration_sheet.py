@@ -1,6 +1,6 @@
 """Build the blind human scoring sheet for judge calibration.
 
-    python experiments/build_calibration_sheet.py --evidence runs/pilot3-watch
+    python experiments/build_calibration_sheet.py --evidence runs/full2-l2l3         --per-task safe_correct=1,incorrect_only=1
 
 Writes `judge_calibration_sheet.xlsx` (what the rater fills in) and
 `judge_calibration_key.csv` (item -> agent, label; not to be opened before
@@ -35,7 +35,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="Run directory whose sandbox traces supply execution evidence.")
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "docs" / "calibration")
     parser.add_argument("--seed", type=int, default=20261008)
+    parser.add_argument("--per-task", default="",
+                        help="Stratified sample, e.g. safe_correct=1,incorrect_only=1 "
+                             "(two items per task). Default: every corpus agent.")
     args = parser.parse_args(argv)
+    per_task = None
+    if args.per_task:
+        per_task = {k: int(v) for k, v in (p.split("=") for p in args.per_task.split(","))}
 
     log = args.evidence / f"{args.evidence.name}.jsonl"
     if not log.exists():
@@ -44,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
 
     traces = load_traces(log)
     items = build_items(load_corpus(), traces, seed=args.seed,
-                        evidence_source=args.evidence.name)
+                        evidence_source=args.evidence.name, per_task=per_task)
     args.out.mkdir(parents=True, exist_ok=True)
     sheet = args.out / "judge_calibration_sheet.xlsx"
     key = args.out / "judge_calibration_key.csv"
