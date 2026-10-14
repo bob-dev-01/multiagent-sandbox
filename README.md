@@ -721,8 +721,10 @@ Honest list, so nobody discovers these the hard way:
   once more after test 3), so those runs' reuse figures belong to the corpus text as it was then;
   each run's manifest records the corpus hash it used.
 - **The generator still occasionally declares no tools** (2 of 188 agents in integration test 3).
-  Layer 1 stops them; whether such a verdict should go back to the generator instead of a person
-  is an open design question.
+  Layer 1 stops them and they go to a person. That is deliberate (decided 2026-10-14): using a
+  tool the contract does not declare is a contract violation whatever the intent, and no safety
+  verdict is ever sent back to the generator, so the loop cannot learn to pass the checks
+  instead of following the rules.
 - **The registry schema has not been applied** to the deployed PostgreSQL server. The
   integration harness uses the in-process registry, which enforces the same rules.
 - **The Task Executor is not wrapped in AutoGen**, which the research plan names; it is plain
