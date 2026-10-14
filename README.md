@@ -25,6 +25,7 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 | Reuse on reworded tasks | Close paraphrase reused 18/18, free paraphrase 0/18 at τ = 0.85 | [Integration test 1](#integration-test-1-2026-10-08) |
 | Live generator (Claude Opus 5), end to end | TSR 0.92 cold / 0.87 warm, ARR 0.51; 221 agents generated, none executed unsafely; $13.11 | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
 | Live generator after the fixes | TSR **0.978** cold / **1.000** warm, ARR 0.48; 188 agents, 182 PASS, none executed unsafely; $9.12 | [Integration test 3](#integration-test-3--live-generator-after-the-fixes-2026-10-13) |
+| The same loop as AutoGen agents | TSR 0.989 cold / 0.983 warm, ARR 0.49; 266 executions, every one carried by an AutoGen message, none unsafe; $9.50 | [Integration test 4](#integration-test-4--autogen-runtime-live-generator-2026-10-14) |
 | What strictness costs on generated agents | PASS 192 permissive → 161 strict; 39 of the 42 strict rejections trace to a paraphrase that drops a constraint | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
 
 Progress against the experimental design:
@@ -566,6 +567,40 @@ infrastructure failure.
 
 ---
 
+### Integration test 4 — AutoGen runtime, live generator (2026-10-14)
+
+`runs/integ4-autogen-live`, commit `864955e`: integration test 3 repeated with the same settings
+and seeds, with the orchestrator and the Task Executor running as AutoGen agents
+(`--orchestration autogen`): each task reached the orchestrator as a `TaskRequest` and each
+approved agent reached the executor as a `DeployRequest`. 189 agents for $9.50.
+
+| | Integration test 3 (direct) | Integration test 4 (AutoGen) |
+|---|---|---|
+| TSR, cold (n = 90) | 0.978 [0.923, 0.994] | 0.989 [0.940, 0.998] |
+| TSR, warm (n = 180) | 1.000 [0.979, 1.000] | 0.983 [0.952, 0.994] |
+| ARR, warm | 0.478 [0.406, 0.550] | 0.486 [0.413, 0.559] |
+| Escalated, cold / warm | 0.022 / 0.000 | 0.000 / 0.017 |
+| Agents generated (regenerations) | 188 (4) | 189 (5) |
+| Verdicts | 182 PASS, 4 FAIL_INCORRECT, 2 FAIL_UNSAFE | 180 PASS, 5 FAIL_INCORRECT, 3 FAIL_UNSAFE |
+| Executions / refused at the gate / unsafe | 270 / 0 / 0 | 266 / 0 / 0 |
+| Infrastructure failures | 0 | 1 (TLS timeout to the AKS API) |
+| Cost | $9.12 | $9.50 |
+
+- **The AutoGen layer changes nothing measurable.** Every figure lies within the other run's
+  confidence interval; the remaining differences are the model's own run-to-run variation, which a
+  live generator does not remove (the equivalence of the two paths on identical inputs is shown
+  by `tests/test_autogen_team.py`, with the replay generator).
+- **The three escalations are the known pattern** — an empty tool list and a call to the task's
+  tool (T006 paraphrase 1 twice, T020 paraphrase 1), stopped by AF108 before any sandbox ran and
+  sent to a person.
+- **Of the five FAIL_INCORRECT verdicts**, three are model errors on the repaired paraphrases
+  (T005 paraphrase 0 twice, T029 paraphrase 1); T001 paraphrase 1 keyed the counts by timestamp
+  and T024 paraphrase 1 dropped a date. All five were regenerated successfully.
+- Re-judged under each profile: PASS 184 permissive, 182 balanced, 180 strict, 179 paranoid —
+  the same small spread as integration test 3.
+
+---
+
 ### Full-corpus run 1 (2026-10-12)
 
 `runs/full2-l2l3`, commit `885742d`: all 30 tasks, 300 agents × L2, L3 × 3 replicates = 1,800
@@ -755,8 +790,8 @@ Honest list, so nobody discovers these the hard way:
   integration harness uses the in-process registry, which enforces the same rules.
 - **The cluster runs before 2026-10-14 called the orchestrator and executor directly**, not
   through the AutoGen runtime, which was added afterwards. `tests/test_autogen_team.py` runs the
-  same seeds both ways and requires identical outcomes, verdicts and executions; the AutoGen path
-  is now the default (`--orchestration autogen`), and no cluster run has yet gone through it.
+  same seeds both ways and requires identical outcomes, verdicts and executions, and integration
+  test 4 repeated the live run through the runtime with no measurable difference.
 - **The agents are light.** They run for under a millisecond, so this corpus measures gVisor's
   start-up cost, not its per-syscall cost during heavy agent work.
 - **Practitioner interviews (RQ5, RQ6)** are outside this repository.
