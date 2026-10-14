@@ -99,7 +99,7 @@ Security-Latency Score      = (1 − FNR) / log₁₀(latency_p50_ms)           
 
 | Constraint | Value | Source |
 |---|---|---|
-| Orchestration framework | Microsoft AutoGen v0.4+ | Delimitation (enterprise Microsoft alignment) |
+| Orchestration framework | Microsoft AutoGen v0.4+ (implemented on AutoGen Core 0.7) | Delimitation (enterprise Microsoft alignment) |
 | Agent language | Python only | Delimitation |
 | Cloud platform | Microsoft Azure, ITPU Student Subscription (~$100/month credit) | Budget |
 | Sandbox technologies | subprocess+seccomp, Docker/ACI, gVisor — three levels only | Delimitation |
@@ -141,10 +141,10 @@ flowchart TB
 ```mermaid
 flowchart LR
     subgraph TRUSTED["Trusted zone — Azure VM"]
-        ORC["<b>Orchestrator Agent</b><br/>AutoGen AssistantAgent<br/>reuse-vs-generate decision"]
+        ORC["<b>Orchestrator Agent</b><br/>AutoGen agent (Core RoutedAgent)<br/>reuse-vs-generate decision"]
         GEN["<b>Agent Generator</b><br/>LLM, JSON-schema structured output"]
         REG[("<b>Agent Registry</b><br/>PostgreSQL + FAISS index")]
-        EXE["<b>Task Executor</b><br/>AutoGen ConversableAgent<br/>+ OpenTelemetry"]
+        EXE["<b>Task Executor</b><br/>AutoGen agent (Core RoutedAgent)<br/>+ OpenTelemetry"]
         AGG["<b>Validation Aggregator</b><br/>verdict + confidence"]
         SL1["Layer 1<br/>Static Analysis"]
         SL2["Layer 2<br/>Policy Check"]
@@ -172,11 +172,11 @@ flowchart LR
 
 | Component | Responsibility | Technology |
 |---|---|---|
-| **Orchestrator Agent** | Receives task; queries Registry by semantic similarity; decides reuse vs. generate; owns *all* outbound LLM and embedding calls; routes verdicts | AutoGen `AssistantAgent` on Azure VM |
+| **Orchestrator Agent** | Receives task; queries Registry by semantic similarity; decides reuse vs. generate; owns *all* outbound LLM and embedding calls; routes verdicts | AutoGen Core `RoutedAgent` on Azure VM; deterministic routing, no LLM in the decision (implemented as `OrchestratorAgent`) |
 | **Agent Registry** | Durable store of validated agents: code, contract, TSR history (last 5), reuse counter, last-use date, policy-violation events | Azure Database for PostgreSQL Flexible Server (B1ms), JSON columns; FAISS nearest-neighbour index rebuilt on each registration |
 | **Agent Generator** | Converts a task specification into an `AgentSpec` (code + tool manifest + contract) via structured JSON-schema output | Anthropic API, pinned model |
 | **Validation Pipeline** | Three-layer safety and correctness assessment; emits verdict | `bandit` 1.7 + Python `ast` + custom rule engine; YAML policy engine; ACI / gVisor sandboxes |
-| **Task Executor** | Deploys the validated agent inside the AutoGen workflow; collects execution telemetry; continues sandbox monitoring in the execution path | AutoGen `ConversableAgent` + OpenTelemetry → Azure Monitor |
+| **Task Executor** | Deploys the validated agent inside the AutoGen workflow; collects execution telemetry; continues sandbox monitoring in the execution path | AutoGen Core `RoutedAgent` (`ExecutorAgent`), receiving each approved agent as a `DeployRequest` message; micro-agents run as sandboxed tools, not runtime members + OpenTelemetry → Azure Monitor |
 
 ### 5.2 Interfaces
 
