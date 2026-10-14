@@ -312,6 +312,11 @@ def run_integration(
                     )
                 )
 
+        # An AutoGen team holds a running runtime; stop it with its seed.
+        close = getattr(factory, "close", None)
+        if close is not None:
+            close()
+
         # Execution status is known only once every submission for this seed
         # has run: an agent validated in the cold pass may first execute when
         # a paraphrase reuses it.

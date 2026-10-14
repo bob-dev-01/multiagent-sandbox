@@ -73,6 +73,15 @@ The pipeline runs three layers, cheapest first, and short-circuits on a hard fai
 | **2 — Policy** | Declared tools vs. the enterprise registry, network posture, resource bounds, evidence clauses | ~ms, deterministic |
 | **3 — Sandbox** | What the agent actually *does*: syscalls, network attempts, filesystem access, output correctness | 100 ms – 8 s |
 
+The Orchestrator and the Task Executor are two agents in a **Microsoft AutoGen** (Core 0.7)
+runtime, and every hand-over between them is an AutoGen message — a task request to the
+orchestrator, a deployment request to the executor, the execution record back
+(`src/agentfactory/autogen_team.py`). What they decide is deterministic code: routing a safety
+verdict is not a judgement a language model should make. The generated micro-agents are not
+members of the runtime. They have no network and no model access, so they cannot converse; the
+executor runs each one as a sandboxed tool, and data passes between micro-agents only through the
+orchestrator.
+
 Layer 1 is a cheap filter, not the defence. It is defeatable by anything that builds a name at
 runtime; Layer 3 is what actually holds, because it observes behaviour rather than text.
 
@@ -260,7 +269,8 @@ L1 needs Linux for rlimits and seccomp — run it in WSL2 or on the orchestrator
 python experiments/run_integration.py --level L2 --high-risk-level L3 --seeds 5
 ```
 
-The whole loop — orchestrator, generator, pipeline, registry, Task Executor — on every corpus
+The whole loop — orchestrator, generator, pipeline, registry, Task Executor, the first and last
+of them AutoGen agents (`--orchestration direct` calls them in-process instead) — on every corpus
 task against an empty registry (cold pass), then on each task's paraphrases against the populated
 one (warm pass). Every PASS is executed in a sandbox before the task counts as done, so this is
 where TSR, ARR, MTTD, UDR at the deployment boundary and CER are measured.
@@ -743,8 +753,10 @@ Honest list, so nobody discovers these the hard way:
   instead of following the rules.
 - **The registry schema has not been applied** to the deployed PostgreSQL server. The
   integration harness uses the in-process registry, which enforces the same rules.
-- **The Task Executor is not wrapped in AutoGen**, which the research plan names; it is plain
-  Python behind the same interfaces.
+- **The cluster runs before 2026-10-14 called the orchestrator and executor directly**, not
+  through the AutoGen runtime, which was added afterwards. `tests/test_autogen_team.py` runs the
+  same seeds both ways and requires identical outcomes, verdicts and executions; the AutoGen path
+  is now the default (`--orchestration autogen`), and no cluster run has yet gone through it.
 - **The agents are light.** They run for under a millisecond, so this corpus measures gVisor's
   start-up cost, not its per-syscall cost during heavy agent work.
 - **Practitioner interviews (RQ5, RQ6)** are outside this repository.

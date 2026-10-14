@@ -20,6 +20,9 @@ dependencies = [
     "rich>=13.9,<15",
     "python-dotenv>=1.0,<2",
 
+    # Microsoft AutoGen — the orchestrator and Task Executor are agents in its runtime
+    "autogen-core>=0.7.5,<0.8",
+
     # Anthropic — generator (Opus 5) and judge (Sonnet 5)
     "anthropic>=0.40",
 

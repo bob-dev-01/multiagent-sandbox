@@ -34,6 +34,7 @@ sys.path.insert(0, str(REPO_ROOT / "experiments"))
 
 from run_matrix import build_runner  # noqa: E402
 
+from agentfactory.autogen_team import AutoGenAgentFactory  # noqa: E402
 from agentfactory.contracts import IsolationLevel  # noqa: E402
 from agentfactory.corpus import load_corpus, manifest  # noqa: E402
 from agentfactory.executor import TaskExecutor  # noqa: E402
@@ -83,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--generator", default="replay", choices=["replay", "live"],
                         help="replay: labelled corpus variants in a seeded order. live: the real "
                              "generator (Claude Opus 5), with a spending cap.")
+    parser.add_argument("--orchestration", default="autogen", choices=["autogen", "direct"],
+                        help="autogen: orchestrator and executor are AutoGen agents exchanging "
+                             "messages; direct: the same logic called in-process.")
     parser.add_argument("--max-cost-usd", type=float, default=10.0,
                         help="Live generator budget for the whole run; the run stops cleanly "
                              "when it is reached.")
@@ -153,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         live = (LiveGenerator(AgentGenerator(), budget_usd=args.max_cost_usd, sink=agent_log)
                 if args.generator == "live" else None)
 
-        def build(generator) -> AgentFactory:
+        def build(generator) -> AgentFactory | AutoGenAgentFactory:
             registry = InMemoryRegistry()
             pipeline = ValidationPipeline(
                 runner,
@@ -163,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 event_log=log,
             )
-            return AgentFactory(
+            factory = AgentFactory(
                 generator=generator,
                 pipeline=pipeline,
                 registry=registry,
@@ -174,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 event_log=log,
             )
+            return AutoGenAgentFactory(factory) if args.orchestration == "autogen" else factory
 
         def on_record(row: TaskRecord) -> None:
             task_log.write(json.dumps(asdict(row)) + "\n")
