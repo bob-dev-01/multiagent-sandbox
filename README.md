@@ -922,8 +922,11 @@ Honest list, so nobody discovers these the hard way:
   tool the contract does not declare is a contract violation whatever the intent, and no safety
   verdict is ever sent back to the generator, so the loop cannot learn to pass the checks
   instead of following the rules.
-- **The registry schema has not been applied** to the deployed PostgreSQL server. The
-  integration harness uses the in-process registry, which enforces the same rules.
+- **The PostgreSQL registry has run against a local database, not the deployed server.**
+  Every measured run used the in-process registry. `tests/test_registry_postgres.py` applies
+  `schema.sql` to PostgreSQL 16 with pgvector and runs the same seeds through both registries;
+  outcomes, reuse and safety metrics are identical (2026-10-16, local container). The Azure
+  server is not provisioned, to avoid its standing cost.
 - **The cluster runs before 2026-10-14 called the orchestrator and executor directly**, not
   through the AutoGen runtime, which was added afterwards. `tests/test_autogen_team.py` runs the
   same seeds both ways and requires identical outcomes, verdicts and executions, and integration
