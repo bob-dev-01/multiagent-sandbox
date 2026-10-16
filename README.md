@@ -25,6 +25,8 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 | Reuse on reworded tasks | Close paraphrase reused 18/18, free paraphrase 0/18 at τ = 0.85 | [Integration test 1](#integration-test-1-2026-10-08) |
 | Live generator (Claude Opus 5), end to end | TSR 0.92 cold / 0.87 warm, ARR 0.51; 221 agents generated, none executed unsafely; $13.11 | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
 | Live generator after the fixes | TSR **0.978** cold / **1.000** warm, ARR 0.48; 188 agents, 182 PASS, none executed unsafely; $9.12 | [Integration test 3](#integration-test-3--live-generator-after-the-fixes-2026-10-13) |
+| H_3: safety + correctness vs safety only | Accuracy at predicting task success 0.911 → **0.990** on 574 generated agents (McNemar p ≈ 6 × 10⁻¹⁴); no successful agent rejected | [H_1 and H_3](#h_1-and-h_3--formal-tests-2026-10-16) |
+| H_1: pipeline vs no validation | 0 of 810 unsafe cells deployed against 810 of 810 (UDR 95% upper bound 0.47%) | [H_1 and H_3](#h_1-and-h_3--formal-tests-2026-10-16) |
 | LLM judge vs a human rater | Cohen's κ **0.948** (bootstrap 95% CI 0.868–1.000) on 60 blind items; 58 of 60 identical; threshold 0.80 met | [Judge calibration](#judge-calibration--adr-9-2026-10-16) |
 | The same loop as AutoGen agents | TSR 0.989 cold / 0.983 warm, ARR 0.49; 266 executions, every one carried by an AutoGen message, none unsafe; $9.50 | [Integration test 4](#integration-test-4--autogen-runtime-live-generator-2026-10-14) |
 | What strictness costs on generated agents | PASS 192 permissive → 161 strict; 39 of the 42 strict rejections trace to a paraphrase that drops a constraint | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
@@ -723,6 +725,45 @@ Exact McNemar tests between adjacent profiles: permissive → balanced, 72 cells
 - Safety does not move at all: every unsafe agent fails Layer 1 on a HIGH finding, which every
   profile treats as unsafe.
 
+### H_1 and H_3 — formal tests (2026-10-16)
+
+**H_1** (`experiments/h1_baseline.py`). A pipeline with no validation deploys every agent, so its
+UDR is 1 by construction; the paired comparison on the 810 unsafe cells of the full matrix (all
+three levels) is 0 deployed against 810, UDR 0 [0, 0.0047], exact McNemar p ≈ 3 × 10⁻²⁴⁴.
+Where the pipeline stopped them matters more than the p-value: on the corpus, static analysis
+stopped all 540 unsafe L2/L3 cells, so the sandbox was never the layer that decided; among
+live-generated agents, the 18 escalations of integration test 2 were stopped by the sandbox alone
+(the AF108 gap), and the 5 of tests 3 and 4 by static analysis. No agent executed unsafely in
+any run.
+
+**H_3** (`experiments/h3_judge_test.py`; analysis plan committed in `9481322` before any judge
+score existed). Population: the 574 live-generated agents of integration tests 2–4 that passed
+every safety check — the agents a safety-only validator would deploy. Outcome: success at
+execution (exact match; for all 523 executed agents the computed outcome equals the executor's
+record). The correctness half of the combined validator is the calibrated judge, not the exact
+match, which would be circular. Judge cost $3.93; every agent scored.
+
+| Validator | Approves | Precision (approved that succeed) | Accuracy | Recall | Specificity |
+|---|---|---|---|---|---|
+| Safety only | 574 | 0.911 [0.885, 0.932] | 0.911 | 1.000 | 0.000 |
+| Safety + judge (score 3) | 529 | **0.989** [0.975, 0.995] | **0.990** [0.977, 0.995] | 1.000 | 0.882 |
+| Safety + judge (score ≥ 2) | 544 | 0.961 [0.942, 0.975] | 0.963 [0.945, 0.976] | 1.000 | 0.588 |
+
+Exact McNemar, combined (score 3) against safety-only: 45 agents only the combined validator
+gets right, none the other way, p ≈ 5.7 × 10⁻¹⁴. **H_3 is supported.**
+
+- The judge rejected none of the 523 agents that succeed; every one scored 3.
+- Its 6 false approvals are all type mismatches on the ambiguous paraphrases repaired after
+  integration test 2 (`invalid_ids` as integers ×4, `services_with_errors` as a list, `samples`
+  as a list): the judge read the wording the agent was given, which did not fix the type, and
+  accepted the answer. The exact match catches them. In the factory both apply, so the judge
+  complements the automatic check rather than replacing it; its value is on tasks whose output
+  cannot be matched exactly.
+- 51 of the 574 safe agents fail (8.9%), 42 of them from integration test 2; the population is
+  dominated by the runs after the paraphrase repair, where failure is rare.
+
+---
+
 ### Judge calibration — ADR-9 (2026-10-16)
 
 The LLM judge (Claude Sonnet 5) scores correctness on the 0–3 rubric; it may score unattended
@@ -805,8 +846,7 @@ Honest list, so nobody discovers these the hard way:
   not vary by isolation level on this corpus (H_2, reported as a finding).
 - **The judge is calibrated against one human rater** (κ = 0.948 on 60 items, see
   [Judge calibration](#judge-calibration--adr-9-2026-10-16)); the second rater the protocol asks
-  for on a subset has not scored yet. No integration run so far has used the judge, so H_3 has
-  not been tested with it.
+  for on a subset has not scored yet.
 - **The paraphrases were repaired after integration tests 1 and 2** (`11529d7`, and T008 p0
   once more after test 3), so those runs' reuse figures belong to the corpus text as it was then;
   each run's manifest records the corpus hash it used.
