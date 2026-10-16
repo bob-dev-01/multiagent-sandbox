@@ -25,6 +25,7 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 | Reuse on reworded tasks | Close paraphrase reused 18/18, free paraphrase 0/18 at τ = 0.85 | [Integration test 1](#integration-test-1-2026-10-08) |
 | Live generator (Claude Opus 5), end to end | TSR 0.92 cold / 0.87 warm, ARR 0.51; 221 agents generated, none executed unsafely; $13.11 | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
 | Live generator after the fixes | TSR **0.978** cold / **1.000** warm, ARR 0.48; 188 agents, 182 PASS, none executed unsafely; $9.12 | [Integration test 3](#integration-test-3--live-generator-after-the-fixes-2026-10-13) |
+| LLM judge vs a human rater | Cohen's κ **0.948** (bootstrap 95% CI 0.868–1.000) on 60 blind items; 58 of 60 identical; threshold 0.80 met | [Judge calibration](#judge-calibration--adr-9-2026-10-16) |
 | The same loop as AutoGen agents | TSR 0.989 cold / 0.983 warm, ARR 0.49; 266 executions, every one carried by an AutoGen message, none unsafe; $9.50 | [Integration test 4](#integration-test-4--autogen-runtime-live-generator-2026-10-14) |
 | What strictness costs on generated agents | PASS 192 permissive → 161 strict; 39 of the 42 strict rejections trace to a paraphrase that drops a constraint | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
 
@@ -35,7 +36,7 @@ Progress against the experimental design:
 | Validation matrix (30 tasks × 10 agents × 3 levels × 3 replicates = 2,700) | 2,700 (L1, L2, L3) | — |
 | Strictness sweep (RQ4) | all 2,700 cells × 4 profiles, replay verified; 221 generated agents × 4 profiles | — |
 | Integration test (RQ3) | corpus-replay generator, 10 seeds; live generator (Claude Opus 5), 3 seeds, before and after the AF108 fix and paraphrase repair | — |
-| Judge calibration (ADR-9) | blind scoring sheet and tooling | human scores, then κ |
+| Judge calibration (ADR-9) | 60 items scored blind by a human and by the judge; κ = 0.948, gate open | a second human rater on a subset |
 
 ---
 
@@ -722,6 +723,33 @@ Exact McNemar tests between adjacent profiles: permissive → balanced, 72 cells
 - Safety does not move at all: every unsafe agent fails Layer 1 on a HIGH finding, which every
   profile treats as unsafe.
 
+### Judge calibration — ADR-9 (2026-10-16)
+
+The LLM judge (Claude Sonnet 5) scores correctness on the 0–3 rubric; it may score unattended
+only once its agreement with a human reaches Cohen's κ ≥ 0.80. The sample is stratified: one
+safe_correct and one incorrect_only agent from each of the 30 tasks, 60 items, with execution
+evidence from full-corpus run 1. The human scored all 60 blind — random order, opaque ids,
+comments stripped, labels in a separate key — and the judge then scored the same items with
+exactly the same evidence (`experiments/calibrate_judge.py --evidence runs/full2-l2l3`, $0.36).
+
+| | All 60 items | The 30 incorrect agents |
+|---|---|---|
+| Cohen's κ | **0.948** (bootstrap 95% CI 0.868–1.000) | 0.880 |
+| Quadratic-weighted κ | 0.979 | 0.920 |
+| Identical scores | 58 / 60 | 28 / 30 |
+
+- **The gate is open:** the judge may score correctness unattended. In the factory it is called
+  after the sandbox, on the same evidence as here (code, tool data, expected output, the task's
+  scoring guide, the run's output).
+- **The correct agents carry little of the result.** Both raters gave all 30 safe_correct agents
+  a 3; the real test is the grading of partial failure, where κ is 0.88 over the 30 incorrect
+  agents.
+- **Both disagreements are on incorrect agents, one point apart.** T019 (dates parsed
+  month-first): human 1, judge 0. T001 (a total counting every line): human 1, judge 2 — the
+  task's own guide puts this at 1, so here the judge departed from the guide.
+- One human rater, who also directed the corpus. The protocol's second rater on a subset has not
+  been done; until then κ measures agreement with one person.
+
 ---
 
 ## Deployed environment
@@ -775,12 +803,10 @@ Honest list, so nobody discovers these the hard way:
   right answer to its description, and that unsafe_only agents are otherwise correct — is the
   reviewer's job. Every injected violation is a plain pattern Layers 1-2 recognise, so FNR does
   not vary by isolation level on this corpus (H_2, reported as a finding).
-- **The LLM judge is not calibrated.** The blind scoring sheet is a stratified sample of 60
-  agents — one safe_correct and one incorrect_only from each of the 30 tasks, with execution
-  evidence from full-corpus run 1 (`build_calibration_sheet.py --evidence runs/full2-l2l3
-  --per-task safe_correct=1,incorrect_only=1`); the human scores do not exist yet. Unsafe agents
-  are left out because their correctness score never changes a decision. Until κ ≥ 0.80 the judge
-  does not score unattended (ADR-9).
+- **The judge is calibrated against one human rater** (κ = 0.948 on 60 items, see
+  [Judge calibration](#judge-calibration--adr-9-2026-10-16)); the second rater the protocol asks
+  for on a subset has not scored yet. No integration run so far has used the judge, so H_3 has
+  not been tested with it.
 - **The paraphrases were repaired after integration tests 1 and 2** (`11529d7`, and T008 p0
   once more after test 3), so those runs' reuse figures belong to the corpus text as it was then;
   each run's manifest records the corpus hash it used.
