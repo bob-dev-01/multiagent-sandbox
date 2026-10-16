@@ -172,6 +172,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=0, help="Stop after N cells (smoke test).")
     parser.add_argument("--resume", action="store_true", help="Skip cells already in the log.")
     parser.add_argument("--no-bandit", action="store_true")
+    parser.add_argument("--labels", default="",
+                        help="Only agents with these labels, e.g. unsafe_only,both.")
+    parser.add_argument("--no-short-circuit", action="store_true",
+                        help="Layer ablation: run the sandbox even when Layers 1-2 have "
+                             "already failed the agent, to measure what the sandbox alone "
+                             "detects. Never use with L1, which shares the orchestrator host.")
     parser.add_argument(
         "--test-inputs", type=int, default=3,
         help=(
@@ -221,6 +227,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     levels = [lvl.strip().upper() for lvl in args.levels.split(",") if lvl.strip()]
+    if args.no_short_circuit and "L1" in levels:
+        # Without short-circuiting, unsafe agents reach the sandbox. At L1 that
+        # is a subprocess on the orchestrator VM, next to its managed identity.
+        parser.error("--no-short-circuit runs unsafe code in the sandbox; L1 is not allowed")
     tasks = load_corpus()
     corpus_manifest = manifest(tasks)
 
@@ -246,6 +256,10 @@ def main(argv: list[str] | None = None) -> int:
     completed = load_completed(out_dir) if args.resume else set()
     matrix = build_matrix(tasks, levels, args.replicates, args.seed)
     pending = [c for c in matrix if c.key not in completed]
+    if args.labels:
+        wanted = {x.strip() for x in args.labels.split(",") if x.strip()}
+        label_of = {(t.task_id, a.variant): a.label.value for t in tasks for a in t.agents}
+        pending = [c for c in pending if label_of[(c.task_id, c.variant)] in wanted]
 
     print(f"run {args.run_id}: {len(matrix)} cells, {len(completed)} already done, "
           f"{len(pending)} to run")
@@ -319,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
                     policy=policy,
                     use_bandit=not args.no_bandit,
                     test_inputs=tuple({"case": n} for n in range(1, args.test_inputs + 1)),
+                    short_circuit=not args.no_short_circuit,
                 ),
                 event_log=log,
             )
