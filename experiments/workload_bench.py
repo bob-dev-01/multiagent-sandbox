@@ -18,14 +18,21 @@ Each agent is checked by static analysis first and must pass it. Order is
 randomised from the seed; every run is recorded in <run-id>/runs.jsonl.
 Reported per workload: median agent runtime at each level, the L3/L2 ratio of
 medians, and a bootstrap 95% interval for the difference of medians.
+
+A run that has not returned after --run-timeout seconds is abandoned: the
+kubectl processes are killed, the run is recorded as an infrastructure
+failure (never as a measurement), and the benchmark continues. Runs already in
+runs.jsonl are skipped, so the benchmark resumes where it stopped.
 """
 
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import random
 import statistics
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -118,6 +125,7 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=20261016)
     ap.add_argument("--k8s-namespace", default="agentfactory-sandbox")
     ap.add_argument("--kube-context", default="agentfac-aks")
+    ap.add_argument("--run-timeout", type=int, default=240)
     args = ap.parse_args(argv)
 
     out_dir = REPO_ROOT / "runs" / args.run_id
@@ -131,10 +139,36 @@ def main(argv=None) -> int:
             for rep in range(1, args.reps + 1)]
     random.Random(args.seed).shuffle(plan)
     times: dict[tuple[str, str], list[float]] = {}
-    with (out_dir / "runs.jsonl").open("a", encoding="utf-8") as sink:
+    log_path = out_dir / "runs.jsonl"
+    done = set()
+    if log_path.exists():
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            r = json.loads(line)
+            if "error" not in r:
+                done.add((r["workload"], r["level"], r["rep"]))
+                if r["agent_elapsed_ms"] is not None and not r["violation"] and r["exit_code"] == 0:
+                    times.setdefault((r["workload"], r["level"]), []).append(r["agent_elapsed_ms"])
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    with log_path.open("a", encoding="utf-8") as sink:
         for i, (name, lvl, rep) in enumerate(plan, 1):
-            trace = runners[lvl].run(SandboxRequest(spec=specs[name], test_input={"case": 1},
-                                                    run_id=args.run_id))
+            if (name, lvl, rep) in done:
+                continue
+            request = SandboxRequest(spec=specs[name], test_input={"case": 1}, run_id=args.run_id)
+            future = pool.submit(runners[lvl].run, request)
+            try:
+                trace = future.result(timeout=args.run_timeout)
+            except Exception as exc:  # noqa: BLE001 — a hang or an infra error, never a result
+                if isinstance(exc, concurrent.futures.TimeoutError):
+                    subprocess.run(["taskkill", "/F", "/T", "/IM", "kubectl.exe"],
+                                   capture_output=True, check=False)
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                sink.write(json.dumps({"workload": name, "level": lvl, "rep": rep,
+                                       "error": f"{type(exc).__name__}: {exc}"[:300]}) + "\n")
+                sink.flush()
+                print(f"  {name} {lvl} r{rep}: infrastructure failure ({type(exc).__name__})",
+                      flush=True)
+                continue
             row = {"workload": name, "level": lvl, "rep": rep,
                    "agent_elapsed_ms": trace.agent_elapsed_ms,
                    "sandbox_init_ms": trace.sandbox_init_ms, "wall_time_ms": trace.wall_time_ms,
@@ -148,7 +182,9 @@ def main(argv=None) -> int:
             if i % 20 == 0:
                 print(f"  {i}/{len(plan)}", flush=True)
 
-    summary = {}
+    failures = sum(1 for line in log_path.read_text(encoding="utf-8").splitlines()
+                   if "error" in json.loads(line))
+    summary: dict = {"infrastructure_failures": failures}
     for name in WORKLOADS:
         l2, l3 = times.get((name, "L2"), []), times.get((name, "L3"), [])
         if not l2 or not l3:
