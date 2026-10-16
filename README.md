@@ -25,6 +25,7 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 | Reuse on reworded tasks | Close paraphrase reused 18/18, free paraphrase 0/18 at τ = 0.85 | [Integration test 1](#integration-test-1-2026-10-08) |
 | Live generator (Claude Opus 5), end to end | TSR 0.92 cold / 0.87 warm, ARR 0.51; 221 agents generated, none executed unsafely; $13.11 | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
 | Live generator after the fixes | TSR **0.978** cold / **1.000** warm, ARR 0.48; 188 agents, 182 PASS, none executed unsafely; $9.12 | [Integration test 3](#integration-test-3--live-generator-after-the-fixes-2026-10-13) |
+| gVisor while the agent works (workload benchmark) | CPU-bound +12%, allocation-heavy +47%, file I/O **×7.2**, `stat` loop **×6.4** (≈17 µs per call) | [Workload benchmark](#workload-benchmark--gvisor-while-the-agent-works-2026-10-16) |
 | What the sandbox catches alone (layer ablation) | 35 of 90 unsafe agents (38.9%), identical at L2 and L3; static analysis 90 of 90; together 90 of 90 | [Layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16) |
 | H_3: safety + correctness vs safety only | Accuracy at predicting task success 0.911 → **0.990** on 574 generated agents (McNemar p ≈ 6 × 10⁻¹⁴); no successful agent rejected | [H_1 and H_3](#h_1-and-h_3--formal-tests-2026-10-16) |
 | H_1: pipeline vs no validation | 0 of 810 unsafe cells deployed against 810 of 810 (UDR 95% upper bound 0.47%) | [H_1 and H_3](#h_1-and-h_3--formal-tests-2026-10-16) |
@@ -730,6 +731,33 @@ Exact McNemar tests between adjacent profiles: permissive → balanced, 72 cells
 - Safety does not move at all: every unsafe agent fails Layer 1 on a HIGH finding, which every
   profile treats as unsafe.
 
+### Workload benchmark — gVisor while the agent works (2026-10-16)
+
+The corpus agents finish in a millisecond, so every other run measured gVisor's start-up cost
+only. `experiments/workload_bench.py` (`runs/workload-l2l3`) runs four safe agents that each do one
+kind of work, 20 times per level in a seeded random order on the same sandbox node, and compares
+the agent's own runtime as timed inside the sandbox — pod scheduling excluded. No infrastructure
+failures among the 160 runs.
+
+| Workload | What it does | L2 runc, median | L3 gVisor, median | L3 / L2 | Difference (95% CI) |
+|---|---|---|---|---|---|
+| cpu | 200,000 SHA-256 rounds | 124 ms | 139 ms | 1.12 | +14 ms (2–27) |
+| alloc | 40 × 200,000-element lists | 259 ms | 381 ms | 1.47 | +122 ms (111–133) |
+| file_io | write, read and delete 1,500 small files in `/tmp/agent` (memory-backed) | 112 ms | 798 ms | **7.16** | +687 ms (669–694) |
+| stat | 50,000 `stat` calls on one file | 157 ms | 1,001 ms | **6.39** | +845 ms (827–876) |
+
+- **gVisor's price is per system call, not per instruction.** Pure computation runs almost at
+  native speed; every call into the kernel goes through gVisor's user-space kernel instead, which
+  here costs about 17 µs per `stat` and about 0.46 ms per file written, read and deleted.
+- This qualifies the start-up result: +77.5 ms and ≈2.4% is the cost for agents that do little
+  I/O, which is what the corpus and the generated agents are. An agent that spends its time in
+  system calls — many files, many small reads — can run several times slower under gVisor, and a
+  deployment that routes such agents to L3 should budget for it.
+- The memory-backed `/tmp` isolates system-call cost from disk; on a disk-backed volume gVisor's
+  file I/O would also pay its gofer round trips, which this benchmark does not measure.
+
+---
+
 ### Layer ablation — what the sandbox sees alone (2026-10-16)
 
 In every other run Layers 1-2 stop each unsafe corpus agent before the sandbox, so the sandbox's
@@ -900,8 +928,13 @@ Honest list, so nobody discovers these the hard way:
   through the AutoGen runtime, which was added afterwards. `tests/test_autogen_team.py` runs the
   same seeds both ways and requires identical outcomes, verdicts and executions, and integration
   test 4 repeated the live run through the runtime with no measurable difference.
-- **The agents are light.** They run for under a millisecond, so this corpus measures gVisor's
-  start-up cost, not its per-syscall cost during heavy agent work.
+- **The agents are light.** They run for under a millisecond, so the corpus measures gVisor's
+  start-up cost; its per-call cost under load is measured separately by the
+  [workload benchmark](#workload-benchmark--gvisor-while-the-agent-works-2026-10-16), on four
+  synthetic agents rather than on generated ones.
+- **The sandbox records no signal for process spawning or dynamic code at L2/L3**
+  ([layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16)); those agents are
+  stopped by static analysis only. Whether to add run-time detection for them is open.
 - **Practitioner interviews (RQ5, RQ6)** are outside this repository.
 
 See section 16 of `architecture.md` for the fifteen open questions this implementation is built
