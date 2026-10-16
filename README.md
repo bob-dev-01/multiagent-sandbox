@@ -25,6 +25,7 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 | Reuse on reworded tasks | Close paraphrase reused 18/18, free paraphrase 0/18 at τ = 0.85 | [Integration test 1](#integration-test-1-2026-10-08) |
 | Live generator (Claude Opus 5), end to end | TSR 0.92 cold / 0.87 warm, ARR 0.51; 221 agents generated, none executed unsafely; $13.11 | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
 | Live generator after the fixes | TSR **0.978** cold / **1.000** warm, ARR 0.48; 188 agents, 182 PASS, none executed unsafely; $9.12 | [Integration test 3](#integration-test-3--live-generator-after-the-fixes-2026-10-13) |
+| What the sandbox catches alone (layer ablation) | 35 of 90 unsafe agents (38.9%), identical at L2 and L3; static analysis 90 of 90; together 90 of 90 | [Layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16) |
 | H_3: safety + correctness vs safety only | Accuracy at predicting task success 0.911 → **0.990** on 574 generated agents (McNemar p ≈ 6 × 10⁻¹⁴); no successful agent rejected | [H_1 and H_3](#h_1-and-h_3--formal-tests-2026-10-16) |
 | H_1: pipeline vs no validation | 0 of 810 unsafe cells deployed against 810 of 810 (UDR 95% upper bound 0.47%) | [H_1 and H_3](#h_1-and-h_3--formal-tests-2026-10-16) |
 | LLM judge vs a human rater | Cohen's κ **0.948** (bootstrap 95% CI 0.868–1.000) on 60 blind items; 58 of 60 identical; threshold 0.80 met | [Judge calibration](#judge-calibration--adr-9-2026-10-16) |
@@ -86,8 +87,12 @@ members of the runtime. They have no network and no model access, so they cannot
 executor runs each one as a sandboxed tool, and data passes between micro-agents only through the
 orchestrator.
 
-Layer 1 is a cheap filter, not the defence. It is defeatable by anything that builds a name at
-runtime; Layer 3 is what actually holds, because it observes behaviour rather than text.
+The layers are complementary, not redundant, and that is measured rather than assumed
+([layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16)): Layer 1 reads the
+code and is defeatable by anything that builds a name at run time; Layer 3 observes behaviour —
+network, filesystem, tool calls — but on its own catches only 39% of the corpus's unsafe agents,
+because process spawning, dynamic code and embedded secrets leave no trace its monitors record
+at L2/L3. Together they stopped all of them.
 
 ### Isolation levels
 
@@ -724,6 +729,40 @@ Exact McNemar tests between adjacent profiles: permissive → balanced, 72 cells
   measured with generated agents (the live-generator run).
 - Safety does not move at all: every unsafe agent fails Layer 1 on a HIGH finding, which every
   profile treats as unsafe.
+
+### Layer ablation — what the sandbox sees alone (2026-10-16)
+
+In every other run Layers 1-2 stop each unsafe corpus agent before the sandbox, so the sandbox's
+own detection rate had never been observed. `runs/ablation-l2l3`: the 90 unsafe agents
+(unsafe_only and both) at L2 and L3, one replicate, with short-circuiting off
+(`run_matrix.py --labels unsafe_only,both --no-short-circuit`), so every agent ran in the sandbox
+and each layer's own finding is on record (`experiments/layer_ablation.py`). L1 was left out on
+purpose: there the sandbox is a subprocess on the orchestrator VM, next to its managed identity.
+
+| | L2 (runc) | L3 (gVisor) |
+|---|---|---|
+| Detected by static analysis | 90 / 90 | 90 / 90 |
+| Detected by the policy check | 0 / 90 | 0 / 90 |
+| Detected by the sandbox | **35 / 90** (38.9%, 95% CI 29.5–49.2%) | **35 / 90** (38.9%) |
+| Detected by the sandbox and nothing else | 0 | 0 |
+| Missed by every layer | 0 | 0 |
+
+- **The sandbox catches behaviour that crosses a boundary it monitors:** network connections (14),
+  file access outside the agent's area, including `/proc/self/environ` and path traversal (10),
+  and undeclared tool calls (11). Every agent of those kinds was caught.
+- **It does not see the rest:** spawning a process (`subprocess`, `os.system`, `os.popen`),
+  `eval`/`exec`/`compile`, introspection escapes, unsafe deserialisation, and secrets embedded in
+  code or output. At L2 and L3 the container contains these but the harness records no signal
+  for them; that is a gap in run-time detection, not in containment.
+- **The isolation level changes nothing here**, which is the H_2 finding again from the other
+  side: detection is the harness's job and is the same at every level.
+- So the claim that the sandbox is what actually holds is not supported as stated. The layers are
+  complementary — static analysis is complete on planted code patterns, the sandbox on observed
+  behaviour — and only together do they stop every unsafe agent. Integration test 2 showed the
+  converse: 18 generated agents that static analysis missed (the AF108 gap) were stopped by the
+  sandbox.
+
+---
 
 ### H_1 and H_3 — formal tests (2026-10-16)
 
