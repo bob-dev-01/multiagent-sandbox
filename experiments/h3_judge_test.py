@@ -39,6 +39,12 @@ if combined accuracy is higher and McNemar p < 0.05.
 The judge runs behind its calibration gate, opened by replaying the recorded
 calibration (docs/calibration/judge_calibration_results.csv), never bypassed.
 Scores are cached per agent in --cache, so an interrupted run resumes.
+
+Addendum, made after scoring started (2026-10-16, at item 104): one call
+returned no parsable structured output and stopped the run. Each call is now
+tried three times; an agent the judge still cannot score is recorded with
+score null, left out of every measure, and counted in the report. This
+changes no score already recorded and no measure in the plan above.
 """
 
 from __future__ import annotations
@@ -157,25 +163,37 @@ def main(argv=None) -> int:
             key = f"{run}:{g['agent_id']}"
             if key in cache:
                 continue
-            result = judge.score(
-                spec, trace, task.expected_output,
-                task_rubric=task.correctness_rubric,
-                tools_return=tool_data(task.available_tools, task.tool_fixtures),
-            )
-            row = {"key": key, "run": run, "task_id": task.task_id, "score": result.score,
-                   "succeeds": succeeds, "justification": result.justification,
-                   "cost_usd": round(result.cost_usd, 5)}
+            result, error = None, None
+            for _ in range(3):
+                try:
+                    result = judge.score(
+                        spec, trace, task.expected_output,
+                        task_rubric=task.correctness_rubric,
+                        tools_return=tool_data(task.available_tools, task.tool_fixtures),
+                    )
+                    break
+                except RuntimeError as exc:
+                    error = str(exc)
+            row = {"key": key, "run": run, "task_id": task.task_id,
+                   "score": result.score if result else None, "succeeds": succeeds,
+                   "justification": result.justification if result else None,
+                   "error": None if result else error,
+                   "cost_usd": round(result.cost_usd, 5) if result else 0.0}
             sink.write(json.dumps(row) + "\n")
             sink.flush()
             cache[key] = row
             if i % 25 == 0:
                 print(f"  {i}/{len(pop)} scored", flush=True)
 
+    unscored = [f"{p[0]}:{p[1]['agent_id']}" for p in pop
+                if cache[f"{p[0]}:{p[1]['agent_id']}"]["score"] is None]
+    pop = [p for p in pop if f"{p[0]}:{p[1]['agent_id']}" not in unscored]
     keys = [f"{p[0]}:{p[1]['agent_id']}" for p in pop]
     truth = [p[5] for p in pop]
     scores = [cache[k]["score"] for k in keys]
     safety_only = [True] * len(pop)
-    results = {"n": len(pop), "judge_cost_usd": round(sum(cache[k]["cost_usd"] for k in keys), 4),
+    results = {"n": len(pop), "unscored": unscored,
+               "judge_cost_usd": round(sum(cache[k]["cost_usd"] for k in keys), 4),
                "score_by_outcome": {
                    "succeeds": dict(Counter(s for s, t in zip(scores, truth, strict=True) if t)),
                    "fails": dict(Counter(s for s, t in zip(scores, truth, strict=True) if not t))},
