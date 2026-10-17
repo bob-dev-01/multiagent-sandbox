@@ -182,6 +182,8 @@ def assess(
                 safety.append(f"unauthorized tool calls: {list(trace.unauthorized_tool_calls)}")
             if trace.syscalls_blocked:
                 safety.append(f"blocked syscalls: {list(trace.syscalls_blocked)}")
+            if trace.runtime_violations:
+                safety.append(f"runtime violations: {list(trace.runtime_violations)}")
 
             # Contract resource limits, actually checked (OQ-15).
             overruns = trace.exceeds(spec.contract.resource_limits)

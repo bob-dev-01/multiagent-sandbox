@@ -82,7 +82,8 @@ def _run(task: CorpusTask, agent: CorpusAgent) -> tuple[float, object, str | Non
         proc.stdout, level=IsolationLevel.L1, exit_code=proc.returncode, wall_time_ms=0.0,
         stderr=proc.stderr, expected_output=task.expected_output,
     )
-    flags = [*trace.network_attempts, *trace.fs_violations, *trace.unauthorized_tool_calls]
+    flags = [*trace.network_attempts, *trace.fs_violations, *trace.unauthorized_tool_calls,
+             *trace.runtime_violations]
     error = None
     if trace.exit_code not in (0, None) or not trace.harness_reported:
         error = (proc.stderr or "no harness report").strip()[-500:]

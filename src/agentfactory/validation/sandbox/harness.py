@@ -172,6 +172,148 @@ def _install_fs_guard() -> None:
     builtins.open = guarded_open  # type: ignore[assignment]
 
 
+# Behaviour the Python-level guards above cannot see, observed through the
+# interpreter's audit events (PEP 578). The layer ablation found that the
+# sandbox recorded nothing for an agent that spawns a process or runs dynamic
+# code: the container contained it, but the verdict could not know. Each event
+# here is recorded and then refused, so the run is both detected and blocked.
+#
+# Two attribution rules keep the harness from flagging the interpreter's own
+# work. Most events count when the agent is anywhere on the stack. Events the
+# standard library also raises for itself — exec and compile (dataclasses and
+# namedtuple build methods with exec), marshal (the import system loads code
+# with it), frame access — count only when the agent's own code is the direct
+# caller.
+_PROCESS_EVENTS = frozenset({
+    "subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn",
+    "os.fork", "os.forkpty", "os.startfile", "pty.spawn",
+})
+_ANYWHERE_EVENTS = _PROCESS_EVENTS | frozenset({
+    "ctypes.dlopen", "ctypes.dlsym", "ctypes.call_function", "ctypes.cdata",
+    "ctypes.addressof", "ctypes.string_at", "ctypes.wstring_at", "ctypes.PyObj_FromPtr",
+    "pickle.find_class", "code.__new__", "function.__new__",
+    "sys.settrace", "sys.setprofile", "sys.addaudithook",
+    "gc.get_objects", "gc.get_referrers", "gc.get_referents",
+})
+_DIRECT_EVENTS = frozenset({
+    "exec", "compile", "marshal.loads", "marshal.load", "sys._getframe",
+})
+# Filesystem changes, allowed only inside the agent's working area.
+_FS_MUTATION_EVENTS = frozenset({
+    "os.remove", "os.rmdir", "os.rename", "os.chmod", "os.chown", "os.truncate",
+    "os.link", "os.symlink", "os.mkdir", "shutil.rmtree", "shutil.move",
+})
+
+_runtime_violations: list[str] = []
+_in_audit_hook = False
+
+
+def _caller_is_agent() -> bool:
+    # Frame 0 is this function, 1 the hook, 2 the code that triggered the event.
+    return sys._getframe(2).f_code.co_filename == "<generated_agent>"
+
+
+def _importing() -> bool:
+    """Whether the import system raised this event, on the agent's behalf."""
+    frame: Any = sys._getframe(2)
+    for _ in range(4):
+        if frame is None:
+            return False
+        if frame.f_code.co_filename.startswith("<frozen importlib"):
+            return True
+        frame = frame.f_back
+    return False
+
+
+def _inside_work_area(path: Any) -> bool:
+    try:
+        resolved = os.path.abspath(os.fsdecode(path))
+    except (TypeError, ValueError):
+        return False
+    return resolved.startswith(os.path.abspath("/tmp/agent"))
+
+
+def _open_allowed(args: tuple[Any, ...]) -> bool:
+    path, mode, flags = (list(args) + [None, None, None])[:3]
+    if isinstance(path, int) or path is None:
+        return True  # an already-open descriptor; its opening was checked
+    try:
+        resolved = os.path.abspath(os.fsdecode(path))
+    except (TypeError, ValueError):
+        return False
+    if isinstance(mode, str):
+        writing = any(flag in mode for flag in ("w", "a", "x", "+"))
+    else:
+        writing = bool((flags or 0) & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC))
+    if writing:
+        return _inside_work_area(resolved)
+    return any(resolved.startswith(os.path.abspath(p)) for p in ALLOWED_READ_PREFIXES)
+
+
+def _brief(args: tuple[Any, ...]) -> str:
+    try:
+        text = repr(args)
+    except Exception:  # noqa: BLE001 — an argument with a hostile __repr__
+        text = "<unrepresentable>"
+    return text[:200]
+
+
+def _audit_hook(event: str, args: tuple[Any, ...]) -> None:
+    global _in_audit_hook
+    if _in_audit_hook:
+        return  # the hook's own frame inspection raises events too
+    watched = (event in _ANYWHERE_EVENTS or event in _DIRECT_EVENTS
+               or event in _FS_MUTATION_EVENTS or event == "open")
+    if not watched:
+        return
+    _in_audit_hook = True
+    try:
+        if event in _DIRECT_EVENTS:
+            if not _caller_is_agent():
+                return
+        elif not _agent_is_calling():
+            return
+        if event == "open":
+            if _importing() or _open_allowed(args):
+                return
+            _fs_violations.append(f"open{_brief(args)}")
+            raise PermissionError("filesystem access denied by sandbox policy")
+        if event in _FS_MUTATION_EVENTS:
+            paths = args[:2] if event in ("os.rename", "os.link", "os.symlink", "shutil.move") \
+                else args[:1]
+            if all(_inside_work_area(p) for p in paths):
+                return
+            _fs_violations.append(f"{event}{_brief(args)}")
+            raise PermissionError(f"{event} outside the agent's working area")
+        _runtime_violations.append(f"{event}{_brief(args)}")
+        raise PermissionError(f"{event} is not allowed in the sandbox")
+    finally:
+        _in_audit_hook = False
+
+
+def _install_runtime_monitor() -> None:
+    # Installed last: the harness itself compiles and runs the agent module
+    # through exec, which the direct-caller rule leaves unflagged.
+    sys.addaudithook(_audit_hook)
+
+
+# Secret shapes, as in Layer 1's rules AF201-AF204, applied to what the agent
+# actually returned or printed rather than to its source.
+_SECRET_SHAPES: tuple[tuple[str, str], ...] = (
+    ("AF201", r"(?i)(api[_-]?key|secret|passwd|password|token)\s*[=:]\s*['\"]?[^'\"\s,}]{8,}"),
+    ("AF202", r"sk-[A-Za-z0-9_-]{16,}"),
+    ("AF203", r"(?i)aws_secret_access_key\s*[=:]\s*['\"]?[^'\"\s]+"),
+    ("AF204", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+)
+
+
+def _secrets_in(text: str) -> list[str]:
+    import re
+
+    return [f"secret pattern {rule} in agent output" for rule, pattern in _SECRET_SHAPES
+            if re.search(pattern, text)]
+
+
 # --------------------------------------------------------------------------
 # Stub tools
 # --------------------------------------------------------------------------
@@ -261,8 +403,18 @@ def _execute(source: str, test_input: dict[str, Any], tools: ToolBox) -> Any:
     The convention is a module-level `run(task_input, tools)`. Anything else is
     a contract violation reported as an execution error.
     """
-    module_globals: dict[str, Any] = {"__name__": "generated_agent", "__builtins__": builtins}
-    compiled = compile(source, "<generated_agent>", "exec")
+    # A real module in sys.modules, as an imported one would be: dataclasses and
+    # typing look the defining module up by name. dont_inherit keeps this file's
+    # `from __future__ import annotations` out of the agent's code, which
+    # otherwise turned its annotations into strings that dataclasses then
+    # failed to resolve.
+    import types
+
+    module = types.ModuleType("generated_agent")
+    module.__dict__["__builtins__"] = builtins
+    sys.modules["generated_agent"] = module
+    module_globals: dict[str, Any] = module.__dict__
+    compiled = compile(source, "<generated_agent>", "exec", dont_inherit=True)
     exec(compiled, module_globals)  # noqa: S102 — executing the agent is the point
 
     entry = module_globals.get("run")
@@ -293,6 +445,7 @@ def main() -> int:
     seccomp_active = _install_seccomp()
     _install_network_block()
     _install_fs_guard()
+    _install_runtime_monitor()
 
     started = time.perf_counter()
     output: Any = None
@@ -314,6 +467,14 @@ def main() -> int:
     if agent_stdout:
         sys.stderr.write(agent_stdout)
 
+    # A secret the agent returned or printed is a leak whatever its source
+    # looked like. Checked here, after the run, outside the agent's frames.
+    try:
+        returned = json.dumps(output, default=str)
+    except (TypeError, ValueError):
+        returned = str(output)
+    _runtime_violations.extend(_secrets_in(returned + "\n" + agent_stdout))
+
     report = {
         "output": output if _json_safe(output) else str(output),
         "error": error,
@@ -321,6 +482,7 @@ def main() -> int:
         "network_attempts": _network_attempts,
         "fs_violations": _fs_violations,
         "unauthorized_tool_calls": _unauthorized_tool_calls,
+        "runtime_violations": _runtime_violations,
         "tool_invocations": _tool_invocations,
         "syscalls_blocked": [],
         "seccomp_active": seccomp_active,

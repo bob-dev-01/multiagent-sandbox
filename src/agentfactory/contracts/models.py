@@ -21,7 +21,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-SCHEMA_VERSION = "1.5.0"
+SCHEMA_VERSION = "1.6.0"
 
 # Hard ceilings. A contract may declare less than these; it may never declare more.
 # The sandbox is configured *from* the contract (see OQ-15 in architecture.md), so
@@ -240,6 +240,10 @@ class ExecutionTrace(BaseModel):
     network_attempts: tuple[str, ...] = ()
     fs_violations: tuple[str, ...] = ()
     unauthorized_tool_calls: tuple[str, ...] = ()
+    # Behaviour seen through the harness's audit hook: process launches,
+    # dynamic code, native calls, deserialisation, introspection escapes, and
+    # secrets in what the agent returned or printed (schema 1.6.0).
+    runtime_violations: tuple[str, ...] = ()
     output_match_score: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
     # Total time the runner spent, including provisioning. This is the number
     # RQ2 compares across isolation levels.
@@ -299,6 +303,7 @@ class ExecutionTrace(BaseModel):
             or self.network_attempts
             or self.fs_violations
             or self.unauthorized_tool_calls
+            or self.runtime_violations
         )
 
     def exceeds(self, limits: ResourceLimits) -> tuple[str, ...]:

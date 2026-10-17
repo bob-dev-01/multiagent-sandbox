@@ -161,6 +161,7 @@ def parse_harness_result(
         network_attempts=tuple(report.get("network_attempts", ())),
         fs_violations=tuple(report.get("fs_violations", ())),
         unauthorized_tool_calls=tuple(report.get("unauthorized_tool_calls", ())),
+        runtime_violations=tuple(report.get("runtime_violations", ())),
         output_match_score=score_output(agent_output, expected_output),
         wall_time_ms=wall_time_ms,
         peak_memory_mb=peak_memory_mb,
