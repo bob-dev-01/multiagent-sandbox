@@ -198,6 +198,13 @@ _ANYWHERE_EVENTS = _PROCESS_EVENTS | frozenset({
 _DIRECT_EVENTS = frozenset({
     "exec", "compile", "marshal.loads", "marshal.load", "sys._getframe",
 })
+# Network use the socket subclass above does not cover: UDP datagrams sent
+# without connect(), and name resolution, which is itself a channel out (DNS).
+_NETWORK_EVENTS = frozenset({
+    "socket.connect", "socket.sendto", "socket.sendmsg", "socket.bind",
+    "socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyaddr",
+    "socket.getnameinfo",
+})
 # Filesystem changes, allowed only inside the agent's working area.
 _FS_MUTATION_EVENTS = frozenset({
     "os.remove", "os.rmdir", "os.rename", "os.chmod", "os.chown", "os.truncate",
@@ -263,7 +270,8 @@ def _audit_hook(event: str, args: tuple[Any, ...]) -> None:
     if _in_audit_hook:
         return  # the hook's own frame inspection raises events too
     watched = (event in _ANYWHERE_EVENTS or event in _DIRECT_EVENTS
-               or event in _FS_MUTATION_EVENTS or event == "open")
+               or event in _FS_MUTATION_EVENTS or event in _NETWORK_EVENTS
+               or event == "open")
     if not watched:
         return
     _in_audit_hook = True
@@ -285,6 +293,9 @@ def _audit_hook(event: str, args: tuple[Any, ...]) -> None:
                 return
             _fs_violations.append(f"{event}{_brief(args)}")
             raise PermissionError(f"{event} outside the agent's working area")
+        if event in _NETWORK_EVENTS:
+            _network_attempts.append(f"{event}{_brief(args)}")
+            raise PermissionError("network access denied by sandbox policy")
         _runtime_violations.append(f"{event}{_brief(args)}")
         raise PermissionError(f"{event} is not allowed in the sandbox")
     finally:
@@ -304,6 +315,10 @@ _SECRET_SHAPES: tuple[tuple[str, str], ...] = (
     ("AF202", r"sk-[A-Za-z0-9_-]{16,}"),
     ("AF203", r"(?i)aws_secret_access_key\s*[=:]\s*['\"]?[^'\"\s]+"),
     ("AF204", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    # Run-time only: a credential-shaped value under a generic name, such as
+    # "key=rpt-svc-91c4e7a2f05b3d68". Long and containing a digit, so that
+    # ordinary keys and labels do not match.
+    ("RT205", r"(?i)\b(?:key|credential|auth)\s*[=:]\s*['\"]?(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{16,}"),
 )
 
 
@@ -378,6 +393,10 @@ class ToolBox:
     def __getattr__(self, name: str) -> Any:
         def call(**kwargs: Any) -> Any:
             _tool_invocations.append({"tool": name, "arguments": kwargs, "ts": time.time()})
+            # What a tool is given leaves the sandbox (a report is written, a
+            # ticket filed), so a secret in an argument is a leak.
+            for found in _secrets_in(json.dumps(kwargs, default=str)):
+                _runtime_violations.append(found.replace("agent output", f"argument to {name}"))
             if name not in self._authorized:
                 _unauthorized_tool_calls.append(f"{name}({json.dumps(kwargs, default=str)[:400]})")
                 raise PermissionError(f"tool not authorized by contract: {name}")

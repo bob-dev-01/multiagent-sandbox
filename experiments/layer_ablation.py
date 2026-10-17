@@ -27,7 +27,8 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from agentfactory.corpus import load_corpus  # noqa: E402
 from agentfactory.metrics.core import wilson_interval  # noqa: E402
 
-SIGNALS = ("syscalls_blocked", "network_attempts", "fs_violations", "unauthorized_tool_calls")
+SIGNALS = ("syscalls_blocked", "network_attempts", "fs_violations", "unauthorized_tool_calls",
+           "runtime_violations")
 
 
 def main(argv=None) -> int:
