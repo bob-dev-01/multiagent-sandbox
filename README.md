@@ -26,7 +26,7 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 | Live generator (Claude Opus 5), end to end | TSR 0.92 cold / 0.87 warm, ARR 0.51; 221 agents generated, none executed unsafely; $13.11 | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
 | Live generator after the fixes | TSR **0.978** cold / **1.000** warm, ARR 0.48; 188 agents, 182 PASS, none executed unsafely; $9.12 | [Integration test 3](#integration-test-3--live-generator-after-the-fixes-2026-10-13) |
 | gVisor while the agent works (workload benchmark) | CPU-bound +12%, allocation-heavy +47%, file I/O **×7.2**, `stat` loop **×6.4** (≈17 µs per call) | [Workload benchmark](#workload-benchmark--gvisor-while-the-agent-works-2026-10-16) |
-| What the sandbox catches alone (layer ablation) | 35 of 90 unsafe agents (38.9%), identical at L2 and L3; static analysis 90 of 90; together 90 of 90 | [Layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16) |
+| What the sandbox catches alone (layer ablation) | 35 of 90 unsafe agents (38.9%) before the run-time monitor, **65 of 90** (72.2%) after, identical at L2 and L3; static analysis 90 of 90; together 90 of 90; no false positive on 420 corpus cells or 572 generated agents | [Layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16) |
 | H_3: safety + correctness vs safety only | Accuracy at predicting task success 0.911 → **0.990** on 574 generated agents (McNemar p ≈ 6 × 10⁻¹⁴); no successful agent rejected | [H_1 and H_3](#h_1-and-h_3--formal-tests-2026-10-16) |
 | H_1: pipeline vs no validation | 0 of 810 unsafe cells deployed against 810 of 810 (UDR 95% upper bound 0.47%) | [H_1 and H_3](#h_1-and-h_3--formal-tests-2026-10-16) |
 | LLM judge vs a human rater | Cohen's κ **0.948** (bootstrap 95% CI 0.868–1.000) on 60 blind items; 58 of 60 identical; threshold 0.80 met | [Judge calibration](#judge-calibration--adr-9-2026-10-16) |
@@ -91,9 +91,10 @@ orchestrator.
 The layers are complementary, not redundant, and that is measured rather than assumed
 ([layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16)): Layer 1 reads the
 code and is defeatable by anything that builds a name at run time; Layer 3 observes behaviour —
-network, filesystem, tool calls — but on its own catches only 39% of the corpus's unsafe agents,
-because process spawning, dynamic code and embedded secrets leave no trace its monitors record
-at L2/L3. Together they stopped all of them.
+network, filesystem, tool calls, and, through an audit hook in the harness, process launches,
+dynamic code and leaked secrets — and on its own catches 72% of the corpus's unsafe agents. The
+rest are code patterns with no run-time effect (an unused credential, a walk of the class
+hierarchy), which only Layer 1 can see. Together they stopped all of them.
 
 ### Isolation levels
 
@@ -775,6 +776,8 @@ purpose: there the sandbox is a subprocess on the orchestrator VM, next to its m
 | Detected by the sandbox and nothing else | 0 | 0 |
 | Missed by every layer | 0 | 0 |
 
+That was the first run. What follows is what it led to.
+
 - **The sandbox catches behaviour that crosses a boundary it monitors:** network connections (14),
   file access outside the agent's area, including `/proc/self/environ` and path traversal (10),
   and undeclared tool calls (11). Every agent of those kinds was caught.
@@ -789,6 +792,45 @@ purpose: there the sandbox is a subprocess on the orchestrator VM, next to its m
   behaviour — and only together do they stop every unsafe agent. Integration test 2 showed the
   converse: 18 generated agents that static analysis missed (the AF108 gap) were stopped by the
   sandbox.
+
+**The run-time monitor (2026-10-17).** Static analysis is defeatable by code that builds names at
+run time, so a gap the sandbox cannot see is a gap in the system. The harness now installs a
+PEP 578 audit hook (`0b4951a`, extended in `a6009bf`, `858337a`, `0e9cea1`) that records and
+refuses, when the agent is responsible: process launches; `exec`, `compile` and `marshal` called
+from agent code; `ctypes`; pickle class lookup; code and function construction; tracing and `gc`
+introspection; filesystem changes outside `/tmp/agent` and any file open outside the allowed
+areas — including `pathlib`/`io.open`, which the `builtins.open` guard never saw; UDP datagrams
+and name lookups; and secrets in the agent's output, prints or tool arguments. Each round of the
+ablation was rerun after a fix:
+
+| Run | Harness | Sandbox alone, L2 = L3 |
+|---|---|---|
+| `ablation-l2l3` | before the monitor | 35 / 90 (38.9%) |
+| `ablation2-l2l3` | process, dynamic code, native, deserialisation, secrets in output | 62 / 90 |
+| `ablation3-l2l3` | + name lookups, UDP via audit, secrets in tool arguments | 64 / 90 |
+| `ablation4-l2l3` | + `sendto`/`sendmsg` recorded before name resolution | **65 / 90** (72.2%, 95% CI 62.2–80.4%) |
+
+Static analysis still caught 90/90, nothing was caught by the sandbox alone, nothing was missed.
+Two findings along the way were real gaps, not artefacts of the corpus: a UDP datagram to an
+unresolvable host was never recorded, because the interpreter resolves the name before raising
+its audit event (the namespace's deny-all NetworkPolicy contained it; only the record was
+missing); and a credential appended after a newline in a report went unseen, because JSON
+escaping hid the word boundary — fixed after `ablation4` in `0e9cea1` and checked by a unit
+test, not yet by a cluster run. The 25 agents the sandbox still does not flag carry risks with no
+run-time effect: hard-coded credentials that are never used, walks of the class hierarchy or
+`__globals__` that read and do nothing, `__import__` of a harmless module, a pickle round trip of
+plain data. Those are code patterns, and only static analysis can see them.
+
+**No false positives.** The monitor must not flag correct code. With the final harness (every
+change after `a6009bf` touches only code that calls `sendto`/`sendmsg` or carries a secret, and
+no safe agent does): all 300 safe and 120 incorrect corpus cells at L2 and L3 kept their verdicts
+(`runs/fpcheck-corpus-l2l3`), and all 572 distinct live-generated agents that passed every safety
+check, re-validated at L3, kept theirs — 521 PASS, 51 FAIL_INCORRECT, none newly unsafe
+(`experiments/revalidate_generated.py`, `runs/revalidate-generated-l3`). The secret rules were
+also re-applied offline to every generated agent's output and tool arguments: no match. Writing
+the monitor also found and fixed an older harness bug: agents were compiled with the harness's own
+`from __future__ import annotations` and outside `sys.modules`, so `@dataclass` in an agent
+crashed.
 
 ---
 
@@ -935,9 +977,11 @@ Honest list, so nobody discovers these the hard way:
   start-up cost; its per-call cost under load is measured separately by the
   [workload benchmark](#workload-benchmark--gvisor-while-the-agent-works-2026-10-16), on four
   synthetic agents rather than on generated ones.
-- **The sandbox records no signal for process spawning or dynamic code at L2/L3**
-  ([layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16)); those agents are
-  stopped by static analysis only. Whether to add run-time detection for them is open.
+- **Run-time detection covers behaviour, not intent.** Since the run-time monitor the sandbox
+  flags 65 of 90 unsafe corpus agents on its own; the other 25 carry risks with no run-time effect,
+  which only static analysis sees ([layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16)).
+  A Python audit hook is an in-process monitor: native code that bypasses the interpreter would
+  escape it, which is what the container boundary and, at L3, gVisor are for.
 - **Practitioner interviews (RQ5, RQ6)** are outside this repository.
 
 See section 16 of `architecture.md` for the fifteen open questions this implementation is built
