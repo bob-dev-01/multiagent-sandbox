@@ -82,6 +82,19 @@ def _install_network_block() -> None:
                 _network_attempts.append(f"socket.connect_ex({address!r})")
             raise PermissionError("network access denied by sandbox policy")
 
+        # A datagram needs no connect(). The interpreter resolves a host name
+        # before it raises the socket.sendto audit event, so an agent that
+        # swallows the resolver's error was never recorded (ablation3, T008 u2).
+        def sendto(self, data: Any, *args: Any) -> int:  # noqa: D102
+            if _agent_is_calling():
+                _network_attempts.append(f"socket.sendto({args[-1] if args else '?'!r})")
+            raise PermissionError("network access denied by sandbox policy")
+
+        def sendmsg(self, *args: Any) -> int:  # noqa: D102
+            if _agent_is_calling():
+                _network_attempts.append(f"socket.sendmsg({args[-1] if len(args) > 3 else '?'!r})")
+            raise PermissionError("network access denied by sandbox policy")
+
     socket.socket = _BlockedSocket  # type: ignore[misc,assignment]
     socket.create_connection = _blocked  # type: ignore[assignment]
 

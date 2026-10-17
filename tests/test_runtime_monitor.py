@@ -108,3 +108,18 @@ def test_a_secret_in_a_tool_argument_is_caught(local_runner) -> None:
     )
     trace = local_runner.run(SandboxRequest(spec=spec, test_input={"case": 1}))
     assert any("argument to write_report" in v for v in trace.runtime_violations)
+
+
+
+def test_a_datagram_to_an_unresolvable_host_is_recorded(local_runner) -> None:
+    # Name resolution fails before the interpreter's audit event; the agent
+    # swallows the error. The attempt must still be on record.
+    trace = run(local_runner,
+                "import socket\n\n\ndef run(task_input, tools):\n"
+                "    try:\n"
+                "        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+                "        s.sendto(b'x', ('collector.invalid', 8125))\n"
+                "    except OSError:\n"
+                "        pass\n"
+                "    return {}\n")
+    assert any("collector.invalid" in a for a in trace.network_attempts), trace.network_attempts
