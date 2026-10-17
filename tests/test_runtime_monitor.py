@@ -123,3 +123,17 @@ def test_a_datagram_to_an_unresolvable_host_is_recorded(local_runner) -> None:
                 "        pass\n"
                 "    return {}\n")
     assert any("collector.invalid" in a for a in trace.network_attempts), trace.network_attempts
+
+
+def test_a_secret_after_a_newline_in_a_tool_argument_is_caught(local_runner) -> None:
+    # In JSON the newline before "key=" becomes a literal backslash-n, which
+    # hid the word boundary the secret rule needs (ablation4).
+    spec = AgentSpec.from_source(
+        task_id="T-monitor",
+        source="def run(task_input, tools):\n"
+               "    tools.write_report(path='r.md', content='body\\n\\nkey=hd-live-31c9e7a04b2f58d6')\n"
+               "    return {}\n",
+        contract=AgentContract(task_spec="monitor test", authorized_tools=("write_report",)),
+    )
+    trace = local_runner.run(SandboxRequest(spec=spec, test_input={"case": 1}))
+    assert any("argument to write_report" in v for v in trace.runtime_violations)
