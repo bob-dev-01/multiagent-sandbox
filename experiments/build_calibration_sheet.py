@@ -13,6 +13,7 @@ would see it.
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 from collections import Counter
 from pathlib import Path
@@ -38,6 +39,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--per-task", default="",
                         help="Stratified sample, e.g. safe_correct=1,incorrect_only=1 "
                              "(two items per task). Default: every corpus agent.")
+    parser.add_argument("--second-rater", type=int, default=0, metavar="N",
+                        help="Instead of the full sheet, a blank sheet of N of its items for a "
+                             "second human rater (half from each label, seeded), with the same "
+                             "item ids, written as judge_calibration_sheet_rater2.xlsx.")
     args = parser.parse_args(argv)
     per_task = None
     if args.per_task:
@@ -52,6 +57,28 @@ def main(argv: list[str] | None = None) -> int:
     items = build_items(load_corpus(), traces, seed=args.seed,
                         evidence_source=args.evidence.name, per_task=per_task)
     args.out.mkdir(parents=True, exist_ok=True)
+    if args.second_rater:
+        # The protocol's two-rater check: a subset of the same items, same ids,
+        # so calibrate_judge.py --second-sheet pairs them with the first rater.
+        rng = random.Random(args.seed + 2)
+        by_label: dict[str, list] = {}
+        for it in items:
+            by_label.setdefault(it.label, []).append(it)
+        labels = sorted(by_label)
+        quota = {lbl: args.second_rater // len(labels) for lbl in labels}
+        for lbl in labels[: args.second_rater % len(labels)]:
+            quota[lbl] += 1
+        chosen = {it.item_id for lbl in labels for it in rng.sample(by_label[lbl], quota[lbl])}
+        subset = [it for it in items if it.item_id in chosen]
+        sheet2 = args.out / "judge_calibration_sheet_rater2.xlsx"
+        if sheet2.exists():
+            print(f"error: {sheet2} exists; it may hold scores. Move it aside first.")
+            return 2
+        write_sheet(subset, sheet2)
+        print(f"{len(subset)} items for the second rater: {sorted(chosen)}")
+        print(f"labels: {dict(Counter(it.label for it in subset))}")
+        print(f"sheet: {sheet2}")
+        return 0
     sheet = args.out / "judge_calibration_sheet.xlsx"
     key = args.out / "judge_calibration_key.csv"
     if sheet.exists():
