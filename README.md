@@ -987,11 +987,15 @@ Honest list, so nobody discovers these the hard way:
   every safe agent reproduces the expected output, every incorrect one does not, and every unsafe
   one is flagged statically. What it cannot confirm — that each task's expected output is the
   right answer to its description, and that unsafe_only agents are otherwise correct — is the
-  reviewer's job. Every injected violation is a plain pattern Layers 1-2 recognise, so FNR does
+  reviewer's job. The review sheet is built (`experiments/build_label_review_sheet.py`) with the
+  automatic evidence beside each item: 295 of 300 agents are consistent with every check, and in
+  the first layer ablation 55 of 60 unsafe_only agents returned exactly the expected output; the
+  other 5 were refused by the sandbox before they returned and need reading. Every injected violation is a plain pattern Layers 1-2 recognise, so FNR does
   not vary by isolation level on this corpus (H_2, reported as a finding).
 - **The judge is calibrated against one human rater** (κ = 0.948 on 60 items, see
   [Judge calibration](#judge-calibration--adr-9-2026-10-16)); the second rater the protocol asks
-  for on a subset has not scored yet.
+  for has a blank 15-item sheet (`build_calibration_sheet.py --second-rater 15`) but has not
+  scored yet.
 - **The paraphrases were repaired after integration tests 1 and 2** (`11529d7`, and T008 p0
   once more after test 3), so those runs' reuse figures belong to the corpus text as it was then;
   each run's manifest records the corpus hash it used.
@@ -1018,7 +1022,9 @@ Honest list, so nobody discovers these the hard way:
   which only static analysis sees ([layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16)).
   A Python audit hook is an in-process monitor: native code that bypasses the interpreter would
   escape it, which is what the container boundary and, at L3, gVisor are for.
-- **Practitioner interviews (RQ5, RQ6)** are outside this repository.
+- **Practitioner interviews (RQ5, RQ6) have not taken place.** The protocol, consent form, guide
+  (English and Russian, with the measured results), codebook and joint-display template are in
+  `research/interviews/`, committed before any session as the plan requires.
 
 See section 16 of `architecture.md` for the fifteen open questions this implementation is built
 against. OQ-2 — whether gVisor on AKS is deployable at all — is now answered: it is.
