@@ -732,6 +732,42 @@ Exact McNemar tests between adjacent profiles: permissive → balanced, 72 cells
 - Safety does not move at all: every unsafe agent fails Layer 1 on a HIGH finding, which every
   profile treats as unsafe.
 
+### The pre-specified analysis (plan section 5, 2026-10-19)
+
+`experiments/final_analysis.py` → `runs/final_analysis.json` runs the research plan's analysis
+section on the recorded data. Deviations, all forced by the data or the machine: Python
+(statsmodels) instead of R, which is not installed; bootstrap AUC intervals instead of DeLong; and
+no GLMM for UDR or FNR, because every unsafe cell was stopped (complete separation) — the plan's
+penalised fallback is reported as a Haldane–Anscombe corrected odds ratio.
+
+- **RQ1 / H_1.** Every label × level and label × domain cell has a correct-verdict rate of 1.000.
+  Against no validation, the odds ratio of deploying an unsafe agent is 3.4 × 10⁻⁶ at each of L1,
+  L2 and L3 (0 of 270 against 270 of 270 per level).
+- **H_3, threshold sweep.** With the combined score = judge score / 3, every θ from 0.70 to 0.90
+  (the plan's primary θ = 0.75 included) approves 529 of the 574 safe generated agents with a task
+  success rate of 0.989, against 0.911 for safety alone; θ 0.60–0.65 approves 544 at 0.961. No θ
+  rejects an agent that succeeds.
+- **RQ2.** Mixed model on log sandbox time with a random intercept per task: L3 / L2 geometric
+  ratio **1.033** (95% CI 1.027–1.039). Quantile regression, L3 − L2: p50 +128 ms (92–163),
+  p95 +229 ms (160–299), p99 +358 ms (127–588). FNR is 0 at every level, so the planned
+  security–latency score reduces to latency: SLS 0.60 at L1, 0.27 at L2 and L3.
+- **RQ3.** The reuse decision is the similarity of a reworded task to the original. Median cosine
+  (all-MiniLM-L6-v2): 0.91 for the close paraphrases, 0.80 for the free ones. Share eligible for
+  reuse by τ: 0.75 → 88%, 0.80 → 73%, **0.85 → 47%** (CI 37–57%; the measured ARR in
+  integration tests 3–4 was 0.48–0.51), 0.90 → 28%. Every one of the 172 reused agents in tests
+  3–4 succeeded, so the TSR floor (0.70 vs 0.85) never bound; on this evidence τ could be lowered
+  to about 0.75 without a measured loss of task success, which a longer study with more task types
+  would have to confirm.
+- **RQ4.** On the corpus, a deployability score (0 for any safety finding, else the output match)
+  separates deployable from rejectable agents perfectly: AUC 1.000, and all three risk profiles
+  choose the exact-match threshold with FPR = FNR = 0. On generated agents, the judge score alone
+  reaches AUC 0.94 (0.89–0.98); its best threshold, a score of 3, leaves FNR 0.12 (the six
+  type-mismatch approvals), which meets the risk-averse and balanced profiles' constraints but not
+  the operations profile's FNR ≤ 0.10 — that needs the exact match alongside the judge, as the
+  factory has it.
+
+---
+
 ### Workload benchmark — gVisor while the agent works (2026-10-16)
 
 The corpus agents finish in a millisecond, so every other run measured gVisor's start-up cost
