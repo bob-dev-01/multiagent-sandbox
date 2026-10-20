@@ -1,0 +1,42 @@
+name: demo image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "corpus/**"
+      - "research/calibration/**"
+      - "ops/demo/Dockerfile"
+      - "pyproject.toml"
+      - ".github/workflows/demo-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ops/demo/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/bob-dev-01/agentfactory-demo:latest
+            ghcr.io/bob-dev-01/agentfactory-demo:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Agent Factory demo backend
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

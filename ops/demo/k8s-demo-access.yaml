@@ -1,0 +1,72 @@
+# The demo backend's access to the cluster: exactly what the pod runner needs,
+# in the sandbox namespace only, plus the two cluster-scoped reads its
+# preflight makes (the namespace and the gVisor RuntimeClass).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-runner
+  namespace: agentfactory-sandbox
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: demo-runner
+  namespace: agentfactory-sandbox
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: demo-runner
+  namespace: agentfactory-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: demo-runner
+    namespace: agentfactory-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: demo-runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: demo-runner-preflight
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["agentfactory-sandbox"]
+    verbs: ["get"]
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    resourceNames: ["gvisor"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: demo-runner-preflight
+subjects:
+  - kind: ServiceAccount
+    name: demo-runner
+    namespace: agentfactory-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: demo-runner-preflight
+---
+# A long-lived token for the service account, read once by the deploy script.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo-runner-token
+  namespace: agentfactory-sandbox
+  annotations:
+    kubernetes.io/service-account.name: demo-runner
+type: kubernetes.io/service-account-token
