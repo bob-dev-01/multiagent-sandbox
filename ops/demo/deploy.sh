@@ -52,12 +52,13 @@ az role assignment create --assignee-object-id "$PRINCIPAL" --assignee-principal
 az role assignment create --assignee-object-id "$PRINCIPAL" --assignee-principal-type ServicePrincipal \
   --role "Key Vault Secrets User" --scope "$(az keyvault show -n $KV --query id -o tsv)" -o none 2>/dev/null || true
 
+# The model key is not copied into the app: the app reads it from Key Vault
+# with its managed identity (agentfactory.secrets) when it first needs it.
 echo "== secrets and settings"
 az containerapp secret set -g $RG -n $APP -o none --secrets \
-  "anthropic=keyvaultref:https://$KV.vault.azure.net/secrets/anthropic-api-key,identityref:system" \
   "access-code=$ACCESS_CODE" "k8s-token=$K8S_TOKEN" "k8s-ca=$K8S_CA_B64"
 az containerapp update -g $RG -n $APP --image $IMAGE -o none \
-  --set-env-vars "ANTHROPIC_API_KEY=secretref:anthropic" "DEMO_ACCESS_CODE=secretref:access-code" \
+  --set-env-vars "AZURE_KEY_VAULT_NAME=$KV" "DEMO_ACCESS_CODE=secretref:access-code" \
     "K8S_TOKEN=secretref:k8s-token" "K8S_CA_B64=secretref:k8s-ca" "K8S_SERVER=$K8S_SERVER" \
     "DEMO_ALLOWED_ORIGINS=$ORIGIN,http://localhost:8000" "DEMO_DAILY_BUDGET_USD=3" \
     "AZURE_SUBSCRIPTION_ID=$SUB" "AZURE_RESOURCE_GROUP=$RG" "AGENTFACTORY_ENV=demo"
