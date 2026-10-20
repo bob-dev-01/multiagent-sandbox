@@ -174,12 +174,16 @@ class OrchestratorAgent(RoutedAgent):
 class _MessageCounter(DefaultInterventionHandler):
     """Counts every message the runtime delivers, by type and recipient."""
 
-    def __init__(self) -> None:
+    def __init__(self, on_message: Any = None) -> None:
         self.counts: Counter[str] = Counter()
+        # Optional observer, e.g. the demo's live console: (message type, recipient).
+        self.on_message = on_message
 
     async def on_send(self, message: Any, *, message_context: MessageContext,
                       recipient: AgentId) -> Any:
         self.counts[f"{type(message).__name__}->{recipient.type}"] += 1
+        if self.on_message is not None:
+            self.on_message(type(message).__name__, recipient.type)
         return message
 
 
@@ -191,7 +195,7 @@ class AutoGenAgentFactory:
     the two agents. One instance per seed, like the factory it wraps.
     """
 
-    def __init__(self, factory: AgentFactory) -> None:
+    def __init__(self, factory: AgentFactory, *, on_message: Any = None) -> None:
         if factory.executor is None:
             raise ValueError("the AutoGen team needs a factory with a Task Executor")
         self._task_executor = factory.executor
@@ -200,7 +204,7 @@ class AutoGenAgentFactory:
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True,
                                         name="autogen-runtime")
         self._thread.start()
-        self._counter = _MessageCounter()
+        self._counter = _MessageCounter(on_message)
         self._runtime = SingleThreadedAgentRuntime(intervention_handlers=[self._counter])
         self._call(self._start())
 
