@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Factory — live validation floor</title>
+  <meta name="description" content="A sandbox-first validation pipeline for LLM-generated micro-agents, run live: watch a generated agent pass through static analysis, policy, the sandbox and the judge.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/app.css">
+  <script src="config.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Agent Factory</span>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Views">
+      <button role="tab" id="tab-floor" aria-selected="true" aria-controls="view-floor">Live floor</button>
+      <button role="tab" id="tab-results" aria-selected="false" aria-controls="view-results">Results</button>
+    </nav>
+    <div class="infra" id="infra" aria-live="polite">
+      <div class="infra-item" data-res="aks">
+        <span class="dot" aria-hidden="true"></span><span class="infra-label">Cluster</span>
+        <span class="infra-state">checking</span>
+        <button class="mini" data-action="start">Start</button>
+        <button class="mini" data-action="stop">Stop</button>
+      </div>
+      <div class="infra-item" data-res="vm">
+        <span class="dot" aria-hidden="true"></span><span class="infra-label">VM</span>
+        <span class="infra-state">checking</span>
+        <button class="mini" data-action="start">Start</button>
+        <button class="mini" data-action="stop">Stop</button>
+      </div>
+      <div class="infra-money" title="Azure month-to-date cost of the resource group, and today's model budget left">
+        <span id="cost-mtd">–</span><span class="sep">|</span><span id="budget-left">–</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section id="view-floor" role="tabpanel" aria-labelledby="tab-floor" class="view floor-view">
+      <div class="stage">
+        <svg id="floor" viewBox="0 0 1200 640" role="img" aria-label="Factory floor: the agent's route through the validation rooms"></svg>
+        <div class="banner" id="banner" hidden></div>
+        <div class="taskcard" id="taskcard" hidden></div>
+      </div>
+
+      <aside class="controls" aria-label="Run a task">
+        <h2>Send a task</h2>
+        <label class="field">Task
+          <select id="task"></select>
+        </label>
+        <fieldset class="field">
+          <legend>Wording</legend>
+          <label><input type="radio" name="wording" value="original" checked> Original</label>
+          <label><input type="radio" name="wording" value="p0"> Close rewording</label>
+          <label><input type="radio" name="wording" value="p1"> Free rewording</label>
+          <label><input type="radio" name="wording" value="custom"> My own</label>
+        </fieldset>
+        <textarea id="custom" rows="3" placeholder="Describe the same task in your own words" hidden></textarea>
+        <label class="field">Who writes the agent
+          <select id="mode">
+            <option value="live">Claude Opus 5, live</option>
+            <option value="safe_a1">A stored correct agent (no model call)</option>
+            <option value="wrong_i1">A stored wrong agent, then Claude fixes it</option>
+            <option value="unsafe_u1">A stored unsafe agent (variant u1)</option>
+            <option value="unsafe_u2">A stored unsafe agent (variant u2)</option>
+            <option value="both_b1">A stored unsafe and wrong agent</option>
+          </select>
+        </label>
+        <p class="hint" id="mode-hint"></p>
+        <div class="field">
+          <span class="field-name">Sandbox</span>
+          <div class="seg" role="radiogroup" aria-label="Isolation level">
+            <button role="radio" aria-checked="false" data-level="L2">L2 runc</button>
+            <button role="radio" aria-checked="true" data-level="L3">L3 gVisor</button>
+          </div>
+        </div>
+        <label class="field">Strictness
+          <input type="range" id="profile" min="0" max="3" step="1" value="2" list="profile-ticks">
+          <span class="dial-labels"><span>permissive</span><span>balanced</span><span>strict</span><span>paranoid</span></span>
+        </label>
+        <label class="check"><input type="checkbox" id="always"> Run the sandbox even when static analysis has already failed the agent</label>
+        <div class="actions">
+          <button class="primary" id="run">Run live</button>
+          <button id="reset" title="Empty the registry so the next task is generated afresh">Empty registry</button>
+        </div>
+        <h2 class="replay-h">Or replay a recorded run</h2>
+        <div class="replay">
+          <select id="replay"></select>
+          <select id="speed" aria-label="Replay speed">
+            <option value="1">×1</option><option value="2" selected>×2</option><option value="4">×4</option>
+          </select>
+          <button id="play">Play</button>
+        </div>
+        <p class="status" id="status" role="status"></p>
+      </aside>
+
+      <section class="console" aria-label="Event console">
+        <div class="pane-head"><h2>Console</h2><span id="clock">0.0 s</span></div>
+        <ol id="log"></ol>
+      </section>
+
+      <section class="inspector" aria-label="Inspector">
+        <div class="pane-head" role="tablist">
+          <button role="tab" aria-selected="true" data-pane="code">Agent code</button>
+          <button role="tab" aria-selected="false" data-pane="contract">Contract</button>
+          <button role="tab" aria-selected="false" data-pane="verdict">Verdict</button>
+          <button role="tab" aria-selected="false" data-pane="output">Output</button>
+        </div>
+        <div class="pane" data-pane="code"><pre id="code" class="code"><span class="empty">The agent's source appears here once it is written.</span></pre></div>
+        <div class="pane" data-pane="contract" hidden><div id="contract"></div></div>
+        <div class="pane" data-pane="verdict" hidden><div id="verdict"></div></div>
+        <div class="pane" data-pane="output" hidden><div id="output"></div></div>
+      </section>
+    </section>
+
+    <section id="view-results" role="tabpanel" aria-labelledby="tab-results" class="view results-view" hidden>
+      <div id="results"></div>
+    </section>
+  </main>
+
+  <dialog id="code-dialog">
+    <form method="dialog">
+      <h2>Demo access code</h2>
+      <p>Running tasks and starting the cloud resources spend money, so they need the code.</p>
+      <input id="code-input" type="password" autocomplete="off" required>
+      <p class="status" id="code-status"></p>
+      <div class="actions"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Unlock</button></div>
+    </form>
+  </dialog>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

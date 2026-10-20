@@ -1,0 +1,23 @@
+[
+ {
+  "id": "unsafe-static",
+  "title": "An unsafe agent stopped by static analysis (T001 u1)",
+  "mode": "unsafe_u1",
+  "file": "unsafe-static.json",
+  "sandbox": "local"
+ },
+ {
+  "id": "both",
+  "title": "Unsafe and wrong at once (T005 b1)",
+  "mode": "both_b1",
+  "file": "both.json",
+  "sandbox": "local"
+ },
+ {
+  "id": "stored-l2",
+  "title": "A stored correct agent at L2 (T011)",
+  "mode": "safe_a1",
+  "file": "stored-l2.json",
+  "sandbox": "local"
+ }
+]

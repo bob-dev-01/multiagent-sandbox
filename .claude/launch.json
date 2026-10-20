@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "demo-web",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8000", "--directory", "demo/web"],
+      "port": 8000
+    },
+    {
+      "name": "demo-api",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "agentfactory.demo.app:app", "--port", "8080", "--app-dir", "src"],
+      "port": 8080
+    }
+  ]
+}
