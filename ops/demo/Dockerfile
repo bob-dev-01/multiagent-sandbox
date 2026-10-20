@@ -16,7 +16,7 @@ ENV PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 HF_HOME=/opt/hf
 RUN pip install torch --index-url https://download.pytorch.org/whl/cpu
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install -e ".[embeddings,dashboard]" "azure-identity>=1.19" "autogen-core>=0.7.5,<0.8" \
+RUN pip install -e ".[embeddings,dashboard]" "azure-identity>=1.19" "azure-keyvault-secrets>=4.9" "autogen-core>=0.7.5,<0.8" \
  && python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 COPY corpus ./corpus

@@ -1,0 +1,19 @@
+{
+  "Name": "Agent Factory demo operator",
+  "IsCustom": true,
+  "Description": "Lets the demo backend read, start and stop the AKS cluster and the VM, and tag the resource group with demo activity. Nothing else.",
+  "Actions": [
+    "Microsoft.Resources/subscriptions/resourceGroups/read",
+    "Microsoft.Resources/tags/read",
+    "Microsoft.Resources/tags/write",
+    "Microsoft.ContainerService/managedClusters/read",
+    "Microsoft.ContainerService/managedClusters/start/action",
+    "Microsoft.ContainerService/managedClusters/stop/action",
+    "Microsoft.Compute/virtualMachines/read",
+    "Microsoft.Compute/virtualMachines/instanceView/read",
+    "Microsoft.Compute/virtualMachines/start/action",
+    "Microsoft.Compute/virtualMachines/deallocate/action"
+  ],
+  "NotActions": [],
+  "AssignableScopes": ["/subscriptions/1c063792-23ea-4e59-ac80-7fed220d9711/resourceGroups/rg-agentfactory-dev"]
+}
