@@ -54,7 +54,7 @@ done
 if ! az identity federated-credential show -g $RG --identity-name $ID -n github-main >/dev/null 2>&1; then
   az identity federated-credential create -g $RG --identity-name $ID -n github-main \
     --issuer https://token.actions.githubusercontent.com \
-    --subject "repo:$REPO:ref:refs/heads/main" --audiences api://AzureADTokenExchange -o none
+    --subject "repo:bob-dev-01@132093634/multiagent-sandbox@1375667911:ref:refs/heads/main" --audiences api://AzureADTokenExchange -o none
 fi
 
 echo "== environment (express)"
