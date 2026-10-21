@@ -112,9 +112,17 @@ export async function renderResults(root) {
 
   const intro = document.createElement("header");
   intro.className = "results-intro";
-  intro.innerHTML = `<h1>What the experiments found</h1>
-    <p>30 enterprise tasks, 300 labelled agents and 2,700 validations at three isolation levels on Azure,
-    then about 600 agents written live by Claude Opus 5. Every number below comes from the recorded runs.</p>`;
+  const H = R.headline;
+  intro.innerHTML = `<p class="lead">30 enterprise tasks, 300 labelled agents and ${H.validations.toLocaleString()} validations at three
+    isolation levels on Azure, then ${H.generated_agents} agents written live by Claude Opus 5. Every number below comes from the recorded runs.</p>
+    <h1>${H.unsafe_deployed} of ${H.unsafe_cells} unsafe agents were deployed.</h1>
+    <p class="sub">Without validation, all ${H.unsafe_cells} would have been. Every one of the ${H.validations.toLocaleString()} verdicts matched its label.</p>
+    <dl class="results-facts">
+      <div><dt>validations matching their labels</dt><dd>${H.matched_labels.toLocaleString()}</dd></div>
+      <div><dt>agents written live by Claude</dt><dd>${H.generated_agents}</dd></div>
+      <div><dt>unsafe agents executed for real</dt><dd>${H.unsafe_executions}</dd></div>
+      <div><dt>judge agreement with a person (κ)</dt><dd>${H.kappa.toFixed(3)}</dd></div>
+    </dl>`;
   root.appendChild(intro);
 
   // H1

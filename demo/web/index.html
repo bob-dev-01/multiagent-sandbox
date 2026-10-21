@@ -3,130 +3,170 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Agent Factory — live validation floor</title>
-  <meta name="description" content="A sandbox-first validation pipeline for LLM-generated micro-agents, run live: watch a generated agent pass through static analysis, policy, the sandbox and the judge.">
+  <title>Agent Factory, live validation floor</title>
+  <meta name="description" content="A sandbox-first validation pipeline for LLM-generated micro-agents, run live: watch generated agents walk through static analysis, policy, the sandbox and the judge.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/app.css?v=2">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/app.css?v=4">
   <script src="config.js"></script>
 </head>
 <body>
   <header class="bar">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">Agent Factory</span>
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="2" width="24" height="24" rx="5" fill="none" stroke="#f3f5f2" stroke-width="2"/><path d="M8 15l4 4 8-10" fill="none" stroke="#f2c230" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Agent Factory
     </div>
     <nav class="tabs" role="tablist" aria-label="Views">
       <button role="tab" id="tab-floor" aria-selected="true" aria-controls="view-floor">Live floor</button>
       <button role="tab" id="tab-results" aria-selected="false" aria-controls="view-results">Results</button>
     </nav>
-    <div class="infra" id="infra" aria-live="polite">
-      <div class="infra-item" data-res="aks">
-        <span class="dot" aria-hidden="true"></span><span class="infra-label">Cluster</span>
-        <span class="infra-state">checking</span>
-        <button class="mini" data-action="start">Start</button>
-        <button class="mini" data-action="stop">Stop</button>
-      </div>
-      <div class="infra-item" data-res="vm">
-        <span class="dot" aria-hidden="true"></span><span class="infra-label">VM</span>
-        <span class="infra-state">checking</span>
-        <button class="mini" data-action="start">Start</button>
-        <button class="mini" data-action="stop">Stop</button>
-      </div>
-      <div class="infra-money" title="Azure month-to-date cost of the resource group, and today's model budget left">
-        <span id="cost-mtd">–</span><span class="sep">|</span><span id="budget-left">–</span>
-      </div>
+    <div class="bar-gap"></div>
+    <div class="cluster" id="cluster" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="cluster-state">Sandbox cluster: checking</span>
+      <button id="cluster-start" hidden>Start</button>
+      <button id="cluster-stop" hidden>Stop</button>
+    </div>
+    <div class="meter" title="Today's model budget for the demo">
+      <div class="meter-row"><span>Model budget today</span><span id="budget-left">–</span></div>
+      <div class="meter-track"><div class="meter-fill" id="budget-fill"></div></div>
+      <span class="mtd" id="cost-mtd"></span>
     </div>
   </header>
 
   <main>
     <section id="view-floor" role="tabpanel" aria-labelledby="tab-floor" class="view floor-view">
-      <div class="stage">
-        <svg id="floor" viewBox="0 0 1200 640" role="img" aria-label="Factory floor: the agent's route through the validation rooms"></svg>
-        <div class="banner" id="banner" hidden></div>
-        <div class="taskcard" id="taskcard" hidden></div>
-      </div>
+      <aside class="launcher" aria-label="Choose what to show">
+        <h2>What do you want to show?</h2>
+        <div class="scenarios" role="radiogroup" aria-label="Scenario" id="scenarios"></div>
 
-      <aside class="controls" aria-label="Run a task">
-        <h2>Send a task</h2>
-        <label class="field">Task
+        <label class="field" id="task-field">Task
           <select id="task"></select>
         </label>
-        <fieldset class="field">
-          <legend>Wording</legend>
-          <label><input type="radio" name="wording" value="original" checked> Original</label>
-          <label><input type="radio" name="wording" value="p0"> Close rewording</label>
-          <label><input type="radio" name="wording" value="p1"> Free rewording</label>
-          <label><input type="radio" name="wording" value="custom"> My own</label>
-        </fieldset>
-        <textarea id="custom" rows="3" placeholder="Describe the same task in your own words" hidden></textarea>
-        <label class="field">Who writes the agent
-          <select id="mode">
-            <option value="live">Claude Opus 5, live</option>
-            <option value="safe_a1">A stored correct agent (no model call)</option>
-            <option value="wrong_i1">A stored wrong agent, then Claude fixes it</option>
-            <option value="unsafe_u1">A stored unsafe agent (variant u1)</option>
-            <option value="unsafe_u2">A stored unsafe agent (variant u2)</option>
-            <option value="both_b1">A stored unsafe and wrong agent</option>
-          </select>
-        </label>
-        <p class="hint" id="mode-hint"></p>
-        <div class="field">
-          <span class="field-name">Sandbox</span>
-          <div class="seg" role="radiogroup" aria-label="Isolation level">
-            <button role="radio" aria-checked="false" data-level="L2">L2 runc</button>
-            <button role="radio" aria-checked="true" data-level="L3">L3 gVisor</button>
+
+        <div class="batch-opts" id="batch-opts" hidden>
+          <label class="field"><span class="field-label">How many tasks</span>
+            <select id="batch-size">
+              <option value="5">5</option><option value="10">10</option><option value="15" selected>15</option>
+              <option value="20">20</option><option value="30">30</option>
+            </select>
+          </label>
+          <label class="field"><span class="field-label">At the same time</span>
+            <select id="batch-parallel">
+              <option value="1">1, in a row</option><option value="3">3</option><option value="5">5</option>
+              <option value="10">10</option><option value="15" selected>15</option>
+            </select>
+          </label>
+          <label class="field" style="grid-column: 1 / -1"><span class="field-label">Who writes the agents</span>
+            <select id="batch-mode">
+              <option value="live">Claude Opus 5, live</option>
+              <option value="safe_a1">Stored correct agents (free)</option>
+              <option value="unsafe_u1">Stored unsafe agents (free)</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="settings">
+          <button class="settings-head" id="settings-toggle" aria-expanded="false" aria-controls="settings-body">
+            <span style="font-weight: 600">Validation settings</span>
+            <span class="chips"><span class="chip" id="chip-level">L3 gVisor</span><span class="chip" id="chip-profile">strict</span>
+              <svg class="chev" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 5l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span>
+          </button>
+          <div class="settings-body" id="settings-body" hidden>
+            <div class="field"><span class="field-label">Sandbox</span>
+              <div class="seg two" role="radiogroup" aria-label="Sandbox isolation" id="level">
+                <button role="radio" aria-checked="false" data-level="L2">L2 runc</button>
+                <button role="radio" aria-checked="true" data-level="L3">L3 gVisor</button>
+              </div>
+            </div>
+            <div class="field"><span class="field-label">Strictness</span>
+              <div class="seg four" role="radiogroup" aria-label="Strictness profile" id="profile">
+                <button role="radio" aria-checked="false" data-profile="permissive">permissive</button>
+                <button role="radio" aria-checked="false" data-profile="balanced">balanced</button>
+                <button role="radio" aria-checked="true" data-profile="strict">strict</button>
+                <button role="radio" aria-checked="false" data-profile="paranoid">paranoid</button>
+              </div>
+            </div>
+            <label class="field"><span class="field-label">Wording of the task</span>
+              <select id="wording">
+                <option value="original">Original corpus text</option>
+                <option value="p0">Close rewording</option>
+                <option value="p1">Free rewording</option>
+                <option value="custom">My own words</option>
+              </select>
+            </label>
+            <textarea id="custom" rows="3" placeholder="Describe the same task in your own words" hidden></textarea>
+            <label class="check"><input type="checkbox" id="always"> Run the sandbox even when static analysis has already failed the agent</label>
           </div>
         </div>
-        <label class="field">Strictness
-          <input type="range" id="profile" min="0" max="3" step="1" value="2" list="profile-ticks">
-          <span class="dial-labels"><span>permissive</span><span>balanced</span><span>strict</span><span>paranoid</span></span>
-        </label>
-        <label class="check"><input type="checkbox" id="always"> Run the sandbox even when static analysis has already failed the agent</label>
+
         <div class="actions">
-          <button class="primary" id="run">Run live</button>
-          <button id="reset" title="Empty the registry so the next task is generated afresh">Empty registry</button>
+          <button class="btn primary" id="run">Run live</button>
+          <button class="btn" id="batch-stop" hidden>Stop after the running tasks</button>
+          <div class="row">
+            <select id="replay" aria-label="Recorded run"></select>
+            <button class="btn small" id="play">Play recording</button>
+          </div>
+          <p class="note" id="ready-note"></p>
+          <p class="status" id="status" role="status"></p>
+          <button class="linkish" id="reset" title="Empty the archive so the next task is written afresh">Empty the archive</button>
         </div>
-        <h2 class="replay-h">Or run several tasks in a row</h2>
-        <div class="replay">
-          <select id="batch-size" aria-label="How many tasks">
-            <option value="5">5 tasks</option><option value="10" selected>10 tasks</option>
-            <option value="20">20 tasks</option><option value="30">All 30 tasks</option>
-          </select>
-          <button id="batch-run">Run batch</button>
-          <button id="batch-stop" hidden>Stop after this task</button>
-        </div>
-        <p class="hint">Tasks are picked at random and run one after another with the settings above. A live batch costs a few cents per task.</p>
-        <h2 class="replay-h">Or replay a recorded run</h2>
-        <div class="replay">
-          <select id="replay"></select>
-          <select id="speed" aria-label="Replay speed">
-            <option value="1">×1</option><option value="2" selected>×2</option><option value="4">×4</option>
-          </select>
-          <button id="play">Play</button>
-        </div>
-        <p class="status" id="status" role="status"></p>
       </aside>
 
-      <section class="console" aria-label="Event console">
-        <div class="pane-head"><h2>Console</h2><span id="clock">0.0 s</span></div>
-        <ol id="log"></ol>
-      </section>
-
-      <section class="inspector" aria-label="Inspector">
-        <div class="pane-head" role="tablist">
-          <button role="tab" aria-selected="true" data-pane="code">Agent code</button>
-          <button role="tab" aria-selected="false" data-pane="contract">Contract</button>
-          <button role="tab" aria-selected="false" data-pane="verdict">Verdict</button>
-          <button role="tab" aria-selected="false" data-pane="output">Output</button>
-          <button role="tab" aria-selected="false" data-pane="batch">Batch</button>
+      <section class="stagecol" aria-label="The factory floor">
+        <div class="card runhead">
+          <div class="runhead-top">
+            <div class="runtitle">
+              <span class="over" id="run-over">Nothing running yet</span>
+              <h1 id="run-title">Pick a scenario and press Run</h1>
+            </div>
+            <div class="runmeta">
+              <span class="pill state idle" id="run-state"><span class="blip" aria-hidden="true"></span><span id="run-state-text">Idle</span></span>
+              <span class="pill" id="run-level">L3 gVisor</span>
+              <span class="pill" id="run-profile">strict profile</span>
+              <span class="clock" id="clock">0.0 s</span>
+            </div>
+          </div>
+          <div class="batchstrip" id="batchstrip" hidden>
+            <div class="batchbar" id="batchbar" role="img"></div>
+            <ul class="tally" id="tally" aria-label="Tally"></ul>
+          </div>
+          <div class="floorwrap"><div class="floor" id="floor" role="group" aria-label="Factory floor plan"></div></div>
+          <div class="legend-row">
+            <span class="k"><i style="background: var(--active)"></i>at work</span>
+            <span class="k"><i style="background: var(--queued)"></i>waiting</span>
+            <span class="k"><i style="background: var(--pass)"></i>passed</span>
+            <span class="k"><i style="background: var(--wrong)"></i>wrong</span>
+            <span class="k"><i style="background: var(--unsafe)"></i>unsafe</span>
+            <span class="k"><i style="background: var(--active); box-shadow: 0 0 0 3px var(--hazard)"></i>followed; click any agent to follow it</span>
+          </div>
         </div>
-        <div class="pane" data-pane="code"><pre id="code" class="code"><span class="empty">The agent's source appears here once it is written.</span></pre></div>
-        <div class="pane" data-pane="contract" hidden><div id="contract"></div></div>
-        <div class="pane" data-pane="verdict" hidden><div id="verdict"></div></div>
-        <div class="pane" data-pane="output" hidden><div id="output"></div></div>
-        <div class="pane" data-pane="batch" hidden><div id="batch"><p class="empty">Run several tasks in a row to see them listed here.</p></div></div>
+
+        <div class="lower">
+          <div class="card detail" id="detail" aria-live="polite">
+            <span class="over" id="detail-over">The floor</span>
+            <h2 id="detail-title">Ten rooms, walked in order</h2>
+            <p id="detail-text">Each task becomes an agent that walks from the intake through every check. An agent found in the archive skips straight to dispatch; an unsafe one is walked to quarantine and never runs for real.</p>
+            <div id="detail-extra"></div>
+          </div>
+          <div class="card inspector">
+            <div class="pane-head" role="tablist" aria-label="Run details">
+              <button role="tab" aria-selected="true" data-pane="events">Events</button>
+              <button role="tab" aria-selected="false" data-pane="code">Agent code</button>
+              <button role="tab" aria-selected="false" data-pane="contract">Contract</button>
+              <button role="tab" aria-selected="false" data-pane="verdict">Verdict</button>
+              <button role="tab" aria-selected="false" data-pane="output">Output</button>
+              <button role="tab" aria-selected="false" data-pane="batch">Batch</button>
+            </div>
+            <div class="pane" data-pane="events"><ol id="log"></ol></div>
+            <div class="pane" data-pane="code" hidden><pre id="code" class="code"></pre></div>
+            <div class="pane" data-pane="contract" hidden><div id="contract"></div></div>
+            <div class="pane" data-pane="verdict" hidden><div id="verdict"></div></div>
+            <div class="pane" data-pane="output" hidden><div id="output"></div></div>
+            <div class="pane" data-pane="batch" hidden><div id="batch"><p class="empty">Run several tasks at once to see them listed here.</p></div></div>
+          </div>
+        </div>
       </section>
     </section>
 
@@ -139,12 +179,12 @@
     <form method="dialog">
       <h2>Demo access code</h2>
       <p>Running tasks and starting the cloud resources spend money, so they need the code.</p>
-      <input id="code-input" type="password" autocomplete="off" required>
+      <input id="code-input" type="password" autocomplete="off" required aria-label="Access code">
       <p class="status" id="code-status"></p>
-      <div class="actions"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Unlock</button></div>
+      <div class="dlg-actions"><button class="btn small" value="cancel" formnovalidate>Cancel</button><button class="btn small primary" value="ok">Unlock</button></div>
     </form>
   </dialog>
 
-  <script type="module" src="js/main.js?v=2"></script>
+  <script type="module" src="js/main.js?v=4"></script>
 </body>
 </html>

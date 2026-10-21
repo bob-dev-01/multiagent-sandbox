@@ -159,3 +159,14 @@ def test_a_batch_refuses_too_many_at_once(session) -> None:
     with pytest.raises(RunRefused):
         session.start_batch(["T001"], RunRequest(task_id="T001", mode="safe_a1"), parallel=16)
     assert not session._busy.locked()
+
+
+def test_the_session_names_what_is_running(session) -> None:
+    batch = session.start_batch(["T001", "T011"], RunRequest(task_id="T001", mode="safe_a1", level="L2"),
+                                parallel=2)
+    assert session.describe()["active"] == {"run_id": None, "batch_id": batch.batch_id}
+    deadline = time.time() + 120
+    while not batch.done and time.time() < deadline:
+        time.sleep(0.1)
+    time.sleep(0.1)
+    assert session.describe()["active"] is None

@@ -131,6 +131,7 @@ class DemoSession:
         self._busy = threading.Lock()
         self._money = threading.Lock()   # budget spending and reservations
         self._reserved_usd = 0.0
+        self._active: dict[str, str | None] = {"run_id": None, "batch_id": None}
         self._init = threading.Lock()    # lazy loading of the shared embedder and judge
         self._embedder: Any = _LockedEmbedder(embedder) if embedder is not None else None
         self._judge: Any = None
@@ -189,6 +190,8 @@ class DemoSession:
             "budget": {"daily_usd": self.budget.daily_usd,
                        "left_usd": round(self.budget.left_usd, 2)},
             "busy": self._busy.locked(),
+            # What a second viewer can join and watch instead of starting a run.
+            "active": dict(self._active) if self._busy.locked() else None,
         }
 
     def start(self, req: RunRequest) -> DemoRun:
@@ -205,6 +208,7 @@ class DemoSession:
             raise RunRefused("another run is in progress")
         run = DemoRun()
         self.runs[run.run_id] = run
+        self._active = {"run_id": run.run_id, "batch_id": None}
         threading.Thread(target=self._run, args=(run, req, task), daemon=True).start()
         return run
 
@@ -226,6 +230,7 @@ class DemoSession:
         batch = Batch(batch_id=uuid.uuid4().hex[:10], parallel=parallel,
                       items=[{"task_id": t, "status": "queued", "run_id": None} for t in task_ids])
         self.batches[batch.batch_id] = batch
+        self._active = {"run_id": None, "batch_id": batch.batch_id}
         threading.Thread(target=self._run_batch, args=(batch, template), daemon=True).start()
         return batch
 
