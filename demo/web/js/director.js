@@ -5,7 +5,7 @@
 // track, so a burst (static analysis takes milliseconds) still reads at human
 // speed and a slow step (the sandbox takes seconds) holds the agent in its room.
 
-import { ROOMS } from "./floor.js?v=4";
+import { ROOMS } from "./floor.js?v=7";
 
 const VERDICT_STATE = { PASS: "pass", FAIL_UNSAFE: "unsafe", FAIL_BOTH: "unsafe", FAIL_INCORRECT: "wrong" };
 const PROFILE_NAMES = ["permissive", "balanced", "strict", "paranoid"];
@@ -85,6 +85,8 @@ class Track {
         Object.assign(this.info, { taskId: d.task_id, title: d.title, description: d.description,
           level: d.level, profile: d.profile, replay: d.replay, batch: d.batch });
         this.inspect.expected = d.expected_output;
+        // If the agent being followed has finished, follow this one instead.
+        if (this.fleet.tracks.get(this.fleet.followed)?.done) this.fleet.follow(this.key);
         this.fleet.registered = d.registered ?? this.fleet.registered;
         f.shelf(this.fleet.registered);
         this.set("working");

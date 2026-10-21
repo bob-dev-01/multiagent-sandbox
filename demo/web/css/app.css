@@ -198,6 +198,8 @@ h1, h2, h3 { margin: 0; }
 .door.h { width: 26px; height: 50px; }
 .door.v { width: 50px; height: 26px; }
 .door.red { background: var(--unsafe-soft); color: var(--unsafe-ink); border-color: var(--unsafe); }
+.door.green { background: var(--pass-soft); color: var(--pass); border-color: var(--pass); }
+.reuse-line { position: absolute; z-index: 1; border: 2px dashed var(--pass); border-radius: 3px; pointer-events: none; }
 
 .agent {
   position: absolute; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 3px;

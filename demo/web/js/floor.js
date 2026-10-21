@@ -95,55 +95,99 @@ export class Floor {
     return (a.y + a.h + bTop) / 2;
   }
 
+  // Where two neighbouring rooms meet. Agents walk door to door, so they
+  // cross each room in a straight line and never cut through a wall.
+  door(a, b) {
+    const cx = (k) => this.centre(k).x, cy = (k) => this.centre(k).y;
+    const key = [a, b].sort().join("|");
+    const D = {
+      "archive|intake": () => ({ x: this.gapX("intake", "archive"), y: cy("intake") }),
+      "archive|workshop": () => ({ x: this.gapX("archive", "workshop"), y: cy("archive") }),
+      "scanner|workshop": () => ({ x: this.gapX("workshop", "scanner"), y: cy("workshop") }),
+      "desk|scanner": () => ({ x: cx("scanner"), y: this.gapY("scanner", "desk") }),
+      "desk|lab": () => ({ x: this.gapX("lab", "desk"), y: cy("desk") }),
+      "judge|lab": () => ({ x: this.gapX("judge", "lab"), y: cy("judge") }),
+      "gate|judge": () => ({ x: cx("judge"), y: this.gapY("judge", "gate") }),
+      "dispatch|gate": () => ({ x: this.gapX("gate", "dispatch"), y: cy("gate") }),
+      "desk|quarantine": () => ({ x: cx("desk"), y: this.gapY("desk", "quarantine") }),
+    };
+    return D[key] ? D[key]() : null;
+  }
+
+  // The reuse shortcut: out of the archive's floor, along the corridor between
+  // the judge and the lab, and into dispatch, past every check.
+  reusePath() {
+    const xGap = this.gapX("judge", "lab");
+    const y1 = this.gapY("archive", "lab"), y2 = this.gapY("lab", "dispatch");
+    const xIn = this.box("dispatch").x + 70;
+    return [{ x: this.centre("archive").x, y: y1 }, { x: xGap, y: y1 }, { x: xGap, y: y2 }, { x: xIn, y: y2 }];
+  }
+
   placeDoors() {
     for (const d of this.doorEls) d.remove();
     this.doorEls = [];
-    const door = (x, y, orient, arrow, red) => {
-      const d = el("span", `door ${orient}${red ? " red" : ""}`, this.root, arrow);
+    const add = (cls, style, html = "") => {
+      const d = el("span", cls, this.root, html);
       d.setAttribute("aria-hidden", "true");
-      Object.assign(d.style, { left: `${x}px`, top: `${y}px` });
+      Object.assign(d.style, style);
       this.doorEls.push(d);
     };
-    const cy = (k) => this.centre(k).y, cx = (k) => this.centre(k).x;
-    door(this.gapX("intake", "archive"), cy("intake"), "h", "›");
-    door(this.gapX("archive", "workshop"), cy("archive"), "h", "›");
-    door(this.gapX("workshop", "scanner"), cy("workshop"), "h", "›");
-    door(cx("scanner"), this.gapY("scanner", "desk"), "v", "⌄");
-    door(this.gapX("lab", "desk"), cy("desk"), "h", "‹");
-    door(this.gapX("judge", "lab"), cy("judge"), "h", "‹");
-    door(cx("judge"), this.gapY("judge", "gate"), "v", "⌄");
-    door(this.gapX("gate", "dispatch"), cy("gate"), "h", "›");
-    door(cx("desk"), this.gapY("desk", "quarantine"), "v", "⌄", true);
-    door(cx("gate"), this.gapY("gate", "corridor"), "v", "⌄", true);
-    door(cx("quarantine"), this.gapY("quarantine", "corridor"), "v", "⌃", true);
+    const door = (a, b, orient, arrow, red) => {
+      const p = this.door(a, b);
+      add(`door ${orient}${red ? " red" : ""}`, { left: `${p.x}px`, top: `${p.y}px` }, arrow);
+    };
+    // The green reuse corridor, drawn under the agents.
+    const pts = this.reusePath();
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p = pts[i], q = pts[i + 1];
+      add("reuse-line", {
+        left: `${Math.min(p.x, q.x) - 2}px`, top: `${Math.min(p.y, q.y) - 2}px`,
+        width: `${Math.abs(q.x - p.x) + 4}px`, height: `${Math.abs(q.y - p.y) + 4}px`,
+      });
+    }
+    add("door v green", { left: `${pts[0].x}px`, top: `${pts[0].y}px` }, "⌄");
+    add("door v green", { left: `${pts[3].x}px`, top: `${pts[3].y}px` }, "⌄");
+    door("intake", "archive", "h", "›");
+    door("archive", "workshop", "h", "›");
+    door("workshop", "scanner", "h", "›");
+    door("scanner", "desk", "v", "⌄");
+    door("desk", "lab", "h", "‹");
+    door("lab", "judge", "h", "‹");
+    door("judge", "gate", "v", "⌄");
+    door("gate", "dispatch", "h", "›");
+    door("desk", "quarantine", "v", "⌄", true);
+    const cy = this.corridor.offsetTop + this.corridor.offsetHeight / 2;
+    add("door v red", { left: `${this.centre("gate").x}px`, top: `${this.gapY("gate", "corridor")}px` }, "⌄");
+    add("door v red", { left: `${this.centre("quarantine").x}px`, top: `${this.gapY("quarantine", "corridor")}px` }, "⌃");
+    this.corridorY = cy;
   }
 
-  // Waypoints between two rooms: through the doors along the snake, or by the
-  // corridors for the reuse shortcut and the walk to quarantine.
+  // Waypoints from one room to another, each tagged with the room it leads into.
   route(from, to) {
     if (from === to) return [];
     const i = SNAKE.indexOf(from), j = SNAKE.indexOf(to);
     if (i >= 0 && j >= 0) {
       if (from === "archive" && to === "dispatch") {
-        // The reuse shortcut: down the gaps beside the lab, skipping every check.
-        const x1 = this.gapX("judge", "lab"), y1 = this.gapY("archive", "lab"), y2 = this.gapY("lab", "dispatch");
-        return [{ x: this.centre("archive").x, y: y1 }, { x: x1, y: y1 }, { x: x1, y: y2 },
-          { x: this.centre("dispatch").x, y: y2 }, "dispatch"];
+        const pts = this.reusePath();
+        return pts.map((p, k) => ({ ...p, room: k === pts.length - 1 ? "dispatch" : null }));
       }
       const step = j > i ? 1 : -1;
-      const hops = [];
-      for (let k = i + step; step > 0 ? k <= j : k >= j; k += step) hops.push(SNAKE[k]);
-      return hops;
+      const pts = [];
+      for (let k = i; k !== j; k += step) pts.push({ ...this.door(SNAKE[k], SNAKE[k + step]), room: SNAKE[k + step] });
+      return pts;
     }
     if (to === "quarantine") {
       if (from === "gate") {
         const y = this.corridor.offsetTop + this.corridor.offsetHeight / 2;
-        return [{ x: this.centre("gate").x, y }, { x: this.centre("quarantine").x, y }, "quarantine"];
+        const gx = this.centre("gate").x, qx = this.centre("quarantine").x;
+        return [{ x: gx, y: this.gapY("gate", "corridor"), room: null }, { x: gx, y, room: null },
+          { x: qx, y, room: null }, { x: qx, y: this.gapY("quarantine", "corridor"), room: "quarantine" }];
       }
       // From anywhere before the gate: along the snake to the contract desk, then down.
-      return [...(from === "desk" ? [] : this.route(from, "desk")), "quarantine"];
+      return [...(from === "desk" ? [] : this.route(from, "desk")),
+        { ...this.door("desk", "quarantine"), room: "quarantine" }];
     }
-    return [to];
+    return [];
   }
 
   // Free spots in a room: a grid inside it, below the sign.
@@ -161,7 +205,7 @@ export class Floor {
   relayout(room) {
     this.members[room].forEach((key, i) => {
       const a = this.agents.get(key);
-      if (a && !a.walking) this.place(a, this.slot(room, i));
+      if (a && !a.walking) { a.el.style.setProperty("--walk", "400ms"); this.place(a, this.slot(room, i)); }
     });
     const n = this.members[room].length;
     this.rooms[room].count.textContent = n ? `${n} agent${n === 1 ? "" : "s"}` : "";
@@ -199,21 +243,24 @@ export class Floor {
     this.relayout(from);
     a.walking = true;
     a.el.classList.remove("idle-in-room");
-    const ms = 650 / this.speed;
-    a.el.style.setProperty("--walk", `${ms}ms`);
-    for (const hop of this.route(from, to)) {
-      if (typeof hop === "string") {
-        const p = this.centre(hop);
-        this.place(a, { x: p.x, y: p.y + 10 });
-        if (key === this.followed) this.markFollowedRoom(hop);
-      } else {
-        this.place(a, hop);
-      }
+    // Constant walking speed: a segment's time follows its length.
+    let at = { x: parseFloat(a.el.style.left) || 0, y: parseFloat(a.el.style.top) || 0 };
+    const stepTo = async (p) => {
+      const ms = Math.max(120, Math.min(1100, Math.hypot(p.x - at.x, p.y - at.y) / (0.5 * this.speed)));
+      a.el.style.setProperty("--walk", `${ms}ms`);
+      this.place(a, p);
+      at = p;
       await sleep(ms);
+    };
+    for (const p of this.route(from, to)) {
+      await stepTo(p);
+      if (p.room && key === this.followed) this.markFollowedRoom(p.room);
     }
     a.walking = false;
     a.room = to;
     this.members[to].push(key);
+    const i = this.members[to].length - 1;
+    await stepTo(this.slot(to, i));
     this.relayout(to);
     a.el.classList.add("idle-in-room");
     if (key === this.followed) this.markFollowedRoom(to);

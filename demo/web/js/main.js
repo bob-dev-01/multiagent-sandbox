@@ -1,5 +1,5 @@
-import { Floor, ROOMS } from "./floor.js?v=4";
-import { Fleet, Inspector, ROOM_TEXT, esc } from "./director.js?v=4";
+import { Floor, ROOMS } from "./floor.js?v=7";
+import { Fleet, Inspector, ROOM_TEXT, esc } from "./director.js?v=7";
 
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -273,6 +273,7 @@ async function watchBatch(batchId) {
   inspectorPane("batch");
   const labels = [];
   const pending = [];
+  let chain = Promise.resolve();
   while (state.batch === b) {
     try { b.view = await api(`/api/batches/${batchId}`); } catch { await sleep(2000); continue; }
     if (!labels.length) {
@@ -286,7 +287,14 @@ async function watchBatch(batchId) {
     b.view.items.forEach((it, i) => {
       if (it.run_id && !b.streams.has(i)) {
         b.streams.add(i);
-        pending.push(stream(it.run_id, `item-${i}`, labels[i]));
+        if (b.view.parallel > 1) {
+          pending.push(stream(it.run_id, `item-${i}`, labels[i]));
+        } else {
+          // One at a time: the next agent sets off once the previous one has
+          // finished walking, so a reuse is seen to follow a registration.
+          chain = chain.then(() => stream(it.run_id, `item-${i}`, labels[i])).then(() => settled(`item-${i}`));
+          pending.push(chain);
+        }
       }
     });
     renderBatch(b.view);
@@ -297,6 +305,14 @@ async function watchBatch(batchId) {
   state.backendDone = true;
   refreshSession();
   if (!fleet.busy()) setRunning(false);
+}
+
+async function settled(key) {
+  for (;;) {
+    const t = fleet.tracks.get(key);
+    if (!t || (!t.playing && !t.queue.length)) return;
+    await sleep(200);
+  }
 }
 
 function renderBatch(view) {
@@ -475,7 +491,7 @@ document.querySelectorAll(".tabs button").forEach((tab) => tab.addEventListener(
   $("#view-results").hidden = !results;
   if (results && !state.resultsLoaded) {
     state.resultsLoaded = true;
-    const { renderResults } = await import("./results.js?v=4");
+    const { renderResults } = await import("./results.js?v=7");
     renderResults($("#results"));
   }
 }));
