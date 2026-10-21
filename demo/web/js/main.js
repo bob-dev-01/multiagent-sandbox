@@ -2,7 +2,10 @@ import { Floor } from "./floor.js";
 import { Console, Director, Inspector } from "./director.js";
 
 const $ = (s) => document.querySelector(s);
-const BACKEND = (window.AF_BACKEND || "").replace(/\/$/, "");
+// ?backend=http://localhost:8080 points a local copy of the page at a local backend.
+const override = new URLSearchParams(location.search).get("backend");
+const BACKEND = ((override && /^http:\/\/localhost(:\d+)?$/.test(override) ? override : window.AF_BACKEND) || "")
+  .replace(/\/$/, "");
 const PROFILES = ["permissive", "balanced", "strict", "paranoid"];
 const MODE_HINTS = {
   live: "Claude Opus 5 writes a new agent for the task. About 30 seconds and a few cents.",
@@ -50,22 +53,29 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+// The dialog is driven by its form's submit event rather than the dialog's
+// close event, which some embedded browsers never deliver.
 function askCode() {
   return new Promise((resolve) => {
     const dlg = $("#code-dialog");
+    const form = dlg.querySelector("form");
     $("#code-input").value = "";
     $("#code-status").textContent = "";
     dlg.showModal();
-    dlg.addEventListener("close", async function onClose() {
-      dlg.removeEventListener("close", onClose);
-      if (dlg.returnValue !== "ok") return resolve(false);
+    const onSubmit = async (event) => {
+      event.preventDefault();
+      form.removeEventListener("submit", onSubmit);
+      const ok = event.submitter && event.submitter.value === "ok";
+      dlg.close();
+      if (!ok) return resolve(false);
       state.code = $("#code-input").value.trim();
       try {
         await api("/api/auth", { method: "POST" });
-        localStorage.setItem("af-code", state.code);
+        try { localStorage.setItem("af-code", state.code); } catch { /* storage may be blocked */ }
         resolve(true);
       } catch { state.code = ""; status("That access code was not accepted.", true); resolve(false); }
-    });
+    };
+    form.addEventListener("submit", onSubmit);
   });
 }
 

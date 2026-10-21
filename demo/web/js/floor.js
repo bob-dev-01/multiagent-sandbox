@@ -205,7 +205,8 @@ export class Floor {
 
   text(key, dx, dy, value, attrs = {}) {
     const r = ROOMS[key];
-    const [x, y] = iso(r.x + r.w / 2 + dx, r.y + r.d / 2 + dy, attrs.z || 0);
+    const [x, y0] = iso(r.x + r.w / 2 + dx, r.y + r.d / 2 + dy, attrs.z || 0);
+    const y = y0 + (attrs.dyPx || 0);
     const t = el("text", { class: attrs.cls || "fx-text", x, y, "text-anchor": attrs.anchor || "middle",
       fill: attrs.fill || "#1d2b36" }, this.fxGroup(key));
     t.textContent = value;
@@ -342,7 +343,7 @@ export class Floor {
     add(sandbox.fs_violations, "file access blocked");
     add(sandbox.unauthorized_tool_calls, "undeclared tool");
     add(sandbox.runtime_violations, "runtime violation");
-    if (sandbox.kernel) this.text(key, 0, 2.25, `kernel ${sandbox.kernel}`, { fill: "#4a5967" });
+    if (sandbox.kernel) this.text(key, 0, 1.75, `kernel ${sandbox.kernel}`, { fill: "#4a5967", dyPx: 15 });
     const secs = sandbox.wall_ms ? `${(sandbox.wall_ms / 1000).toFixed(1)} s` : "";
     if (lines.length) {
       const g = this.fxGroup(key);
