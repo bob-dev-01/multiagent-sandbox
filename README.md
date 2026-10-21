@@ -221,6 +221,36 @@ and the experiment now refuses such an id rather than sampling nothing.
 
 ---
 
+## The defence demo
+
+**https://bob-dev-01.github.io/multiagent-sandbox/** — a page with two tabs:
+
+- **Live floor**: an isometric factory where a robot carries each agent through the rooms the
+  system really has — the archive (registry and reuse), the workshop (Claude writes the agent),
+  the scanner (static analysis), the contract desk (policy), the isolation lab (the sandbox, L2
+  runc or L3 gVisor, with the kernel it ran on), the judge, the verdict gate, dispatch (the Task
+  Executor) and human review. Beside it, the live event console (AutoGen messages included) and an
+  inspector with the agent's code, contract, verdict under every strictness profile, and output.
+  Tasks run live — Claude Opus 5 writing the agent, stored corpus agents (correct, unsafe, wrong
+  then fixed by Claude), any of the task's wordings or your own — or seven recorded runs replay
+  without any backend, which is also the fallback when a live run is not possible.
+- **Results**: every finding of this README, from the recorded runs, one chart each.
+
+How it runs, all on free tiers: the page on GitHub Pages; the backend (`src/agentfactory/demo/`,
+FastAPI) as an Azure Container App that scales to zero; sandboxes as pods on the existing AKS
+cluster through a service account that may only manage pods in the sandbox namespace. The
+backend's user-assigned identity can only read, start and stop AKS and the VM, tag the resource
+group and read its cost; the model key is read from Key Vault, never copied. Running a task or
+starting a resource needs the demo access code (Key Vault secret `demo-access-code`); model spend
+is capped at $3 a day. A GitHub Actions schedule stops the cluster after 40 idle minutes when the
+demo started it. Deployment: `bash ops/demo/deploy.sh`; the image and the page are built by
+GitHub Actions.
+
+Container Apps in the regions this subscription allows only offers "express" environments, which
+have no system-assigned identities, no Key Vault secret references and no jobs; hence the
+user-assigned identity, the in-app Key Vault read, and the auto-stop on GitHub Actions. Static Web
+Apps is not offered in any allowed region, hence GitHub Pages.
+
 ## Deploying
 
 ```bash
