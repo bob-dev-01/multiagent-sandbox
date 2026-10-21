@@ -70,6 +70,15 @@ session = DemoSession(runner_factory=runner_factory_from_env(),
 infra = Infra()
 
 
+@app.on_event("startup")
+def _warm_up() -> None:
+    # Load the embedding model in the background, so the first run of a cold
+    # container does not spend a minute on it.
+    import threading
+
+    threading.Thread(target=lambda: session.embedder, daemon=True).start()
+
+
 def _authorise(code: str | None) -> None:
     expected = os.environ.get("DEMO_ACCESS_CODE")
     if not expected or not code or not hmac.compare_digest(code, expected):
