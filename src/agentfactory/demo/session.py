@@ -1,4 +1,4 @@
-"""One demo session: a registry that persists across runs, and one run at a time.
+"""One demo session: a registry that persists across runs, and one run or batch at a time.
 
 A run is a task submitted to the real system — the AutoGen team, the
 validation pipeline with sandbox pods on AKS, the calibrated judge, the Task
@@ -16,6 +16,7 @@ import threading
 import time
 import traceback
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,13 @@ MODES = {
 }
 
 
+# A batch runs at most this many tasks at once.
+MAX_PARALLEL = 15
+# What one live task may cost, held back from the day's budget while it runs,
+# so tasks running side by side cannot together overspend it.
+LIVE_RESERVE_USD = 0.15
+
+
 class RunRefused(Exception):
     """The request cannot be run now: busy, over budget, or invalid."""
 
@@ -88,10 +96,11 @@ class Budget:
 
 @dataclass
 class Batch:
-    """Several tasks run one after another, each as an ordinary demo run."""
+    """Several tasks, each an ordinary demo run, run in order or side by side."""
 
     batch_id: str
     items: list[dict[str, Any]]
+    parallel: int = 1
     done: bool = False
     stopped: str | None = None
     cancel: bool = False
@@ -103,6 +112,7 @@ class Batch:
             tally[i["outcome"]] = tally.get(i["outcome"], 0) + 1
         return {"batch_id": self.batch_id, "done": self.done, "stopped": self.stopped,
                 "items": self.items, "finished": len(finished), "total": len(self.items),
+                "parallel": self.parallel,
                 "tally": tally, "cost_usd": round(sum(i.get("cost_usd") or 0 for i in finished), 4)}
 
 
@@ -119,31 +129,38 @@ class DemoSession:
         self.runs: dict[str, DemoRun] = {}
         self.batches: dict[str, Batch] = {}
         self._busy = threading.Lock()
-        self._embedder: Any = embedder
+        self._money = threading.Lock()   # budget spending and reservations
+        self._reserved_usd = 0.0
+        self._init = threading.Lock()    # lazy loading of the shared embedder and judge
+        self._embedder: Any = _LockedEmbedder(embedder) if embedder is not None else None
         self._judge: Any = None
 
     # ------------------------------------------------------------ components
 
     @property
     def embedder(self) -> Any:
-        if self._embedder is None:
-            from agentfactory.registry.embeddings import SentenceTransformerEmbedder
+        with self._init:
+            if self._embedder is None:
+                from agentfactory.registry.embeddings import SentenceTransformerEmbedder
 
-            self._embedder = SentenceTransformerEmbedder()
-            self._embedder.embed("warm-up")
+                embedder = _LockedEmbedder(SentenceTransformerEmbedder())
+                embedder.embed("warm-up")
+                self._embedder = embedder
         return self._embedder
 
     def judge(self) -> Any:
         if not self.use_judge:
             return None
-        if self._judge is None:
-            from agentfactory.judge.correctness_judge import CorrectnessJudge
+        with self._init:
+            if self._judge is None:
+                from agentfactory.judge.correctness_judge import CorrectnessJudge
 
-            judge = CorrectnessJudge()
-            # The gate opens only by replaying the recorded calibration.
-            rows = list(csv.DictReader(CALIBRATION_PAIRS.open(encoding="utf-8")))
-            judge.calibrate([int(r["human"]) for r in rows], [int(r["judge"]) for r in rows])
-            self._judge = judge
+                judge = CorrectnessJudge()
+                # The gate opens only by replaying the recorded calibration.
+                rows = list(csv.DictReader(CALIBRATION_PAIRS.open(encoding="utf-8")))
+                judge.calibrate([int(r["human"]) for r in rows], [int(r["judge"]) for r in rows])
+                judge._get_client()
+                self._judge = judge
         return self._judge
 
     def reset(self) -> None:
@@ -191,10 +208,12 @@ class DemoSession:
         threading.Thread(target=self._run, args=(run, req, task), daemon=True).start()
         return run
 
-    def start_batch(self, task_ids: list[str], template: RunRequest) -> Batch:
-        """Run the tasks in order, with the template's mode, wording and level."""
+    def start_batch(self, task_ids: list[str], template: RunRequest, parallel: int = 1) -> Batch:
+        """Run the tasks with the template's mode, wording and level, `parallel` at a time."""
         if not task_ids or len(task_ids) > 30:
             raise RunRefused("a batch takes between 1 and 30 tasks")
+        if not 1 <= parallel <= MAX_PARALLEL:
+            raise RunRefused(f"a batch runs between 1 and {MAX_PARALLEL} tasks at once")
         unknown = [t for t in task_ids if t not in self.tasks]
         if unknown:
             raise RunRefused(f"unknown tasks {unknown}")
@@ -204,33 +223,35 @@ class DemoSession:
             raise RunRefused(f"today's demo budget of ${self.budget.daily_usd:.2f} is spent")
         if not self._busy.acquire(blocking=False):
             raise RunRefused("another run is in progress")
-        batch = Batch(batch_id=uuid.uuid4().hex[:10],
+        batch = Batch(batch_id=uuid.uuid4().hex[:10], parallel=parallel,
                       items=[{"task_id": t, "status": "queued", "run_id": None} for t in task_ids])
         self.batches[batch.batch_id] = batch
         threading.Thread(target=self._run_batch, args=(batch, template), daemon=True).start()
         return batch
 
     def _run_batch(self, batch: Batch, template: RunRequest) -> None:
-        held = True  # start_batch took the lock for the first item
-        try:
-            for index, item in enumerate(batch.items):
-                if not held:
-                    self._busy.acquire()
-                held = False  # _run releases it when the item ends
-                if batch.cancel or self.budget.left_usd < 0.05:
-                    batch.stopped = "stopped by request" if batch.cancel else "daily budget spent"
-                    self._busy.release()
-                    for rest in batch.items[index:]:
-                        rest["status"] = "skipped"
-                    break
+        # The session lock, taken by start_batch, is held for the whole batch;
+        # its runs do not release it themselves.
+        reserve = LIVE_RESERVE_USD if template.mode in ("live", "wrong_i1") else 0.0
+
+        def work(index: int, item: dict[str, Any]) -> None:
+            with self._money:
+                short = self.budget.left_usd - self._reserved_usd < max(reserve, 0.05)
+                if batch.cancel or short:
+                    batch.stopped = batch.stopped or (
+                        "stopped by request" if batch.cancel else "daily budget spent")
+                    item["status"] = "skipped"
+                    return
+                self._reserved_usd += reserve
+            try:
                 req = RunRequest(**{**template.__dict__, "task_id": item["task_id"]})
                 run = DemoRun()
                 self.runs[run.run_id] = run
                 item.update(status="running", run_id=run.run_id)
                 started = time.perf_counter()
-                self._run(run, req, self.tasks[item["task_id"]],
+                self._run(run, req, self.tasks[item["task_id"]], own_lock=False,
                           batch={"batch_id": batch.batch_id, "index": index + 1,
-                                 "total": len(batch.items)})
+                                 "total": len(batch.items), "parallel": batch.parallel})
                 finished = next((e["data"] for e in run.events if e["type"] == "run_finished"), {})
                 item.update(status="done", outcome=finished.get("outcome", "demo_error"),
                             succeeded=bool(finished.get("succeeded")),
@@ -239,8 +260,18 @@ class DemoSession:
                             verdicts=[e["data"]["verdict"] for e in run.events if e["type"] == "verdict"],
                             cost_usd=finished.get("cost_usd") or 0.0,
                             seconds=round(time.perf_counter() - started, 1))
+            finally:
+                with self._money:
+                    self._reserved_usd -= reserve
+
+        try:
+            with ThreadPoolExecutor(max_workers=batch.parallel,
+                                    thread_name_prefix=f"batch-{batch.batch_id}") as pool:
+                for index, item in enumerate(batch.items):
+                    pool.submit(work, index, item)
         finally:
             batch.done = True
+            self._busy.release()
 
     def _description(self, req: RunRequest, task: CorpusTask) -> str:
         if req.wording == "p0":
@@ -252,7 +283,7 @@ class DemoSession:
         return task.description
 
     def _run(self, run: DemoRun, req: RunRequest, task: CorpusTask,
-             batch: dict[str, Any] | None = None) -> None:
+             batch: dict[str, Any] | None = None, own_lock: bool = True) -> None:
         team = None
         try:
             description = self._description(req, task)
@@ -267,9 +298,10 @@ class DemoSession:
                 from agentfactory.generator.agent_generator import AgentGenerator
                 from agentfactory.integration import LiveGenerator
 
+                # Inside a batch, each task is capped at its reserved share.
+                cap = LIVE_RESERVE_USD if batch else self.per_run_budget_usd
                 live = LiveGenerator(AgentGenerator(),
-                                     budget_usd=min(self.per_run_budget_usd,
-                                                    self.budget.left_usd))
+                                     budget_usd=min(cap, self.budget.left_usd))
             variant = MODES[req.mode]
             scripted = []
             if variant is not None:
@@ -314,7 +346,8 @@ class DemoSession:
                 correctness_rubric=task.correctness_rubric))
 
             spent = generator.spent_usd + (ijudge.spent_usd if ijudge else 0.0)
-            self.budget.spent_usd += spent
+            with self._money:
+                self.budget.spent_usd += spent
             execution = result.executions[-1] if result.executions else None
             run.emit("run_finished", outcome=result.outcome.value, succeeded=result.succeeded,
                      reused=result.reused, attempts=result.attempts,
@@ -331,8 +364,9 @@ class DemoSession:
             if team is not None:
                 team.close()
             run.finish()
-            self._busy.release()
-            # Keep memory bounded: the last 30 runs.
+            if own_lock:
+                self._busy.release()
+            # Keep memory bounded: the last 80 runs.
             for old in list(self.runs)[:-80]:
                 self.runs.pop(old, None)
 
@@ -350,3 +384,22 @@ def runner_factory_from_env() -> Any:
         return runc_pod_runner(namespace=namespace, kube_context=context)
 
     return make
+
+
+class _LockedEmbedder:
+    """The shared embedding model, used by one run at a time."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self._lock = threading.Lock()
+
+    def embed(self, text: str) -> list[float]:
+        with self._lock:
+            return self.inner.embed(text)
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        with self._lock:
+            return self.inner.embed_batch(texts)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)

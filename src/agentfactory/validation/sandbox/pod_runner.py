@@ -91,6 +91,14 @@ def _default_context() -> str | None:
     return os.environ.get("AGENTFACTORY_KUBE_CONTEXT", "agentfac-aks") or None
 
 
+
+def _cpu_request() -> float:
+    """CPU each sandbox pod requests: 0.5 unless AGENTFACTORY_POD_CPU_REQUEST says otherwise."""
+    try:
+        return max(0.05, float(os.environ.get("AGENTFACTORY_POD_CPU_REQUEST", "0.5")))
+    except ValueError:
+        return 0.5
+
 class PodRunner:
     """A validation sandbox as a single-use Kubernetes pod."""
 
@@ -219,8 +227,11 @@ class PodRunner:
                             "memory": f"{limits.memory_mb}Mi",
                             "ephemeral-storage": "128Mi",
                         },
+                        # The request only reserves scheduling room; the limit
+                        # above is what binds the agent. The demo packs many
+                        # small pods onto one node and lowers it.
                         "requests": {
-                            "cpu": str(min(limits.cpu_cores, 0.5)),
+                            "cpu": str(min(limits.cpu_cores, _cpu_request())),
                             "memory": f"{min(limits.memory_mb, 128)}Mi",
                         },
                     },

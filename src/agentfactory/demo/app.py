@@ -108,6 +108,7 @@ class BatchBody(BaseModel):
     level: str = "L3"
     profile: str = "strict"
     sandbox_always: bool = False
+    parallel: int = 1
 
 
 @app.post("/api/batches")
@@ -117,7 +118,7 @@ def start_batch(body: BatchBody, x_demo_code: str | None = Header(default=None))
                           wording=body.wording, level=body.level, profile=body.profile,
                           sandbox_always=body.sandbox_always)
     try:
-        batch = session.start_batch(body.task_ids, template)
+        batch = session.start_batch(body.task_ids, template, body.parallel)
     except RunRefused as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     _touch()

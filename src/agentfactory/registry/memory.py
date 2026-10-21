@@ -17,6 +17,7 @@ the PostgreSQL one.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -54,6 +55,8 @@ class _Entry:
 class InMemoryRegistry:
     def __init__(self) -> None:
         self._agents: dict[uuid.UUID, _Entry] = {}
+        # Demo runs share one registry from several threads.
+        self._lock = threading.RLock()
 
     # ----------------------------------------------------------- writes
 
@@ -66,25 +69,29 @@ class InMemoryRegistry:
             )
         if result.code_sha256 != spec.code_sha256:
             raise ValueError("validation result does not match the spec it is being stored with")
-        self._agents.setdefault(
-            spec.agent_id, _Entry(spec=spec, embedding=list(embedding), registered_at=_now())
-        )
+        with self._lock:
+            self._agents.setdefault(
+                spec.agent_id, _Entry(spec=spec, embedding=list(embedding), registered_at=_now())
+            )
 
     def record_execution(
         self, agent_id: uuid.UUID, task_id: str, tsr: float, **_: Any
     ) -> None:
-        entry = self._agents[agent_id]
-        entry.tsr_history.append(float(tsr))
-        if entry.mean_tsr < REVALIDATION_TSR_FLOOR:
-            entry.revalidation_required = True
+        with self._lock:
+            entry = self._agents[agent_id]
+            entry.tsr_history.append(float(tsr))
+            if entry.mean_tsr < REVALIDATION_TSR_FLOOR:
+                entry.revalidation_required = True
 
     def record_violation(self, agent_id: uuid.UUID, violation: str, **_: Any) -> None:
-        entry = self._agents[agent_id]
-        entry.violations.append(violation)
-        entry.revalidation_required = True
+        with self._lock:
+            entry = self._agents[agent_id]
+            entry.violations.append(violation)
+            entry.revalidation_required = True
 
     def mark_reused(self, agent_id: uuid.UUID) -> None:
-        self._agents[agent_id].reuse_count += 1
+        with self._lock:
+            self._agents[agent_id].reuse_count += 1
 
     # ------------------------------------------------------------ reads
 
@@ -97,7 +104,9 @@ class InMemoryRegistry:
         limit: int = 1,
     ) -> list[RegisteredAgent]:
         scored = []
-        for agent_id, entry in self._agents.items():
+        with self._lock:
+            agents = list(self._agents.items())
+        for agent_id, entry in agents:
             if entry.revalidation_required:
                 continue
             similarity = cosine_similarity(query_embedding, entry.embedding)

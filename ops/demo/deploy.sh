@@ -78,7 +78,7 @@ az containerapp update -g $RG -n $APP --image $IMAGE -o none \
   --set-env-vars "AZURE_CLIENT_ID=$ID_CLIENT" "AZURE_KEY_VAULT_NAME=$KV" \
     "DEMO_ACCESS_CODE=secretref:access-code" \
     "K8S_TOKEN=secretref:k8s-token" "K8S_CA_B64=secretref:k8s-ca" "K8S_SERVER=$K8S_SERVER" \
-    "DEMO_ALLOWED_ORIGINS=$ORIGIN,http://localhost:8000" "DEMO_DAILY_BUDGET_USD=3" \
+    "DEMO_ALLOWED_ORIGINS=$ORIGIN,http://localhost:8000" "DEMO_DAILY_BUDGET_USD=3" \n    "AGENTFACTORY_POD_CPU_REQUEST=0.1" \
     "AZURE_SUBSCRIPTION_ID=$SUB" "AZURE_RESOURCE_GROUP=$RG" "AGENTFACTORY_ENV=demo"
 
 FQDN=$(az containerapp show -g $RG -n $APP --query properties.configuration.ingress.fqdn -o tsv)

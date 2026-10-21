@@ -12,7 +12,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from agentfactory.demo.session import DemoSession, RunRequest
+from agentfactory.demo.session import DemoSession, RunRefused, RunRequest
 
 from .test_integration import GuardedRunner, TaskOracleEmbedder
 
@@ -135,4 +135,27 @@ def test_a_batch_can_be_stopped(session) -> None:
     while not batch.done and time.time() < deadline:
         time.sleep(0.2)
     assert batch.stopped and any(i["status"] == "skipped" for i in batch.items)
+    assert not session._busy.locked()
+
+
+def test_a_parallel_batch_runs_tasks_side_by_side(session) -> None:
+    tasks = ["T001", "T011", "T021", "T003", "T013", "T023"]
+    batch = session.start_batch(tasks, RunRequest(task_id="T001", mode="safe_a1", level="L2"),
+                                parallel=3)
+    most = 0
+    deadline = time.time() + 300
+    while not batch.done and time.time() < deadline:
+        most = max(most, sum(i["status"] == "running" for i in batch.items))
+        time.sleep(0.05)
+    view = batch.view()
+    assert view["done"] and view["finished"] == 6 and view["parallel"] == 3
+    assert 1 < most <= 3
+    assert all(i["outcome"] in ("generated_and_deployed", "reused", "deployment_refused")
+               for i in view["items"])
+    assert not session._busy.locked() and session._reserved_usd == 0
+
+
+def test_a_batch_refuses_too_many_at_once(session) -> None:
+    with pytest.raises(RunRefused):
+        session.start_batch(["T001"], RunRequest(task_id="T001", mode="safe_a1"), parallel=16)
     assert not session._busy.locked()
