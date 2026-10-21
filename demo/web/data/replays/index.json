@@ -1,23 +1,51 @@
 [
  {
+  "id": "live-new",
+  "title": "Claude writes a new agent (T001)",
+  "mode": "live",
+  "file": "live-new.json",
+  "sandbox": "aks"
+ },
+ {
+  "id": "live-reuse",
+  "title": "A reworded task reuses it",
+  "mode": "live",
+  "file": "live-reuse.json",
+  "sandbox": "aks"
+ },
+ {
+  "id": "wrong-fixed",
+  "title": "A wrong agent, fixed by Claude (T016)",
+  "mode": "wrong_i1",
+  "file": "wrong-fixed.json",
+  "sandbox": "aks"
+ },
+ {
   "id": "unsafe-static",
   "title": "An unsafe agent stopped by static analysis (T001 u1)",
   "mode": "unsafe_u1",
   "file": "unsafe-static.json",
-  "sandbox": "local"
+  "sandbox": "aks"
+ },
+ {
+  "id": "unsafe-sandbox",
+  "title": "The same kind of agent run in the sandbox anyway (T008 u2)",
+  "mode": "unsafe_u2",
+  "file": "unsafe-sandbox.json",
+  "sandbox": "aks"
  },
  {
   "id": "both",
   "title": "Unsafe and wrong at once (T005 b1)",
   "mode": "both_b1",
   "file": "both.json",
-  "sandbox": "local"
+  "sandbox": "aks"
  },
  {
   "id": "stored-l2",
   "title": "A stored correct agent at L2 (T011)",
   "mode": "safe_a1",
   "file": "stored-l2.json",
-  "sandbox": "local"
+  "sandbox": "aks"
  }
 ]

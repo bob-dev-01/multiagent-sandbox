@@ -208,7 +208,11 @@ class DemoSession:
             level = IsolationLevel(req.level)
             log = DemoEventLog(run)
             profile = StrictnessProfile.named(req.profile)
-            registry = InstrumentedRegistry(self.registry, run)
+            # Stored unsafe or wrong agents get an empty registry of their own:
+            # with the shared one, a task already registered would be served
+            # from it and the stored agent would never be shown.
+            shared = req.mode in ("live", "safe_a1")
+            registry = InstrumentedRegistry(self.registry if shared else InMemoryRegistry(), run)
             judge = self.judge()
             ijudge = InstrumentedJudge(judge, run) if judge is not None else None
             pipeline = InstrumentedPipeline(

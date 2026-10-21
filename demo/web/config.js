@@ -1,3 +1,2 @@
-// Where the live backend runs. Empty: the page works on recorded runs only.
-// Set at deployment (ops/demo/deploy.sh writes the Container App's URL here).
-window.AF_BACKEND = "";
+// Where the live backend runs. Written by ops/demo/deploy.sh.
+window.AF_BACKEND = "https://agentfac-demo.victoriouscliff-90237a4f.centralindia.azurecontainerapps.io";

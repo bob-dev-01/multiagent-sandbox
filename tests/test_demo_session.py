@@ -101,3 +101,10 @@ def test_protected_routes_need_the_access_code(monkeypatch) -> None:
     assert client.post("/api/auth", headers={"X-Demo-Code": "test-code-123"}).json()["ok"]
     tasks = client.get("/api/session").json()["tasks"]
     assert len(tasks) == 30 and tasks[0]["agents"]
+
+
+def test_a_stored_unsafe_agent_is_shown_even_when_the_task_is_registered(session) -> None:
+    wait(session, RunRequest(task_id="T001", mode="safe_a1", level="L2"))
+    events = wait(session, RunRequest(task_id="T001", mode="unsafe_u1", level="L2"))
+    assert first(events, "registry_lookup")["decision"] == "generate"
+    assert first(events, "verdict")["verdict"] == "FAIL_UNSAFE"
