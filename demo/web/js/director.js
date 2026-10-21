@@ -129,11 +129,18 @@ export class Director {
     const f = this.floor;
     switch (e.type) {
       case "run_started": {
-        this.ctx = { ...this.ctx, level: d.level, profile: d.profile, expected: d.expected_output };
+        // Later runs of a batch start from the intake again, under a separator.
+        if (d.batch && d.batch.index > 1) {
+          f.reset();
+          this.inspector.clear();
+          this.console.add(e.t, "", `task ${d.batch.index} of ${d.batch.total}`, "sep");
+        }
+        this.ctx = { ...this.ctx, level: d.level, profile: d.profile, expected: d.expected_output, batch: d.batch };
         this.ctx.registered = d.registered ?? this.ctx.registered;
         f.shelf(this.ctx.registered);
         this.ui.taskcard(`<strong>${esc(d.task_id)}: ${esc(d.title)}</strong>${esc(d.description)}`);
-        this.ui.banner(d.replay ? "Recorded run, replayed" : "Live run", "active");
+        this.ui.banner(d.replay ? "Recorded run, replayed"
+          : d.batch ? `Batch: task ${d.batch.index} of ${d.batch.total}` : "Live run", "active");
         this.log(e, "▸", `${esc(d.task_id)} (${d.wording} wording), ${d.level}, ${d.profile} profile${d.replay ? ", recorded" : ""}`, "active");
         await f.wait(700);
         break;
@@ -269,7 +276,7 @@ export class Director {
         this.ui.banner(ok ? `Done: ${outcome}${d.time_to_deploy_sec != null ? ` in ${d.time_to_deploy_sec.toFixed(1)} s` : ""}`
           : `Ended: ${outcome}`, ok ? "pass" : (d.outcome === "escalated_unsafe" ? "unsafe" : "wrong"));
         this.log(e, "▪", `finished: ${outcome}${d.cost_usd ? `, model cost ${money(d.cost_usd)}` : ""}`, ok ? "pass" : "wrong");
-        this.ui.done(d);
+        this.ui.done({ ...d, batch: this.ctx.batch });
         break;
       }
       default:

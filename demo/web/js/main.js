@@ -1,5 +1,5 @@
-import { Floor } from "./floor.js";
-import { Console, Director, Inspector } from "./director.js";
+import { Floor } from "./floor.js?v=2";
+import { Console, Director, Inspector } from "./director.js?v=2";
 
 const $ = (s) => document.querySelector(s);
 // ?backend=http://localhost:8080 points a local copy of the page at a local backend.
@@ -27,7 +27,12 @@ const director = new Director(floor, new Console($("#log"), $("#clock")), new In
     b.hidden = false; b.textContent = text; b.className = `banner ${kind || ""}`;
   },
   taskcard(html) { const c = $("#taskcard"); c.hidden = false; c.innerHTML = html; },
-  done() { setRunning(false); refreshSession(); },
+  done(d) {
+    // Inside a batch only the last task's end releases the controls.
+    const b = state.batch;
+    if (d.batch && b && !(b.streamsDone && d.batch.index >= b.lastIndex)) return;
+    finishBatch();
+  },
 });
 
 function status(text, error = false) {
@@ -35,7 +40,7 @@ function status(text, error = false) {
 }
 function setRunning(on) {
   state.running = on;
-  $("#run").disabled = on; $("#play").disabled = on; $("#reset").disabled = on;
+  $("#run").disabled = on; $("#play").disabled = on; $("#reset").disabled = on; $("#batch-run").disabled = on;
 }
 
 // ------------------------------------------------------------------ backend
@@ -159,6 +164,109 @@ async function playReplay(id, speed) {
     director.push(event);
   }
 }
+
+// ------------------------------------------------------------------ batches
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const OUTCOME_CLASS = { deployed: "pass", reused: "pass", escalated_unsafe: "unsafe" };
+
+function pickTasks(n) {
+  const ids = state.tasks.map((t) => t.task_id);
+  for (let i = ids.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+  }
+  return ids.slice(0, Math.min(n, ids.length));
+}
+
+function renderBatch(view) {
+  const titles = Object.fromEntries(state.tasks.map((t) => [t.task_id, t.title]));
+  const tally = Object.entries(view.tally).map(([k, v]) => `${v} ${k.replaceAll("_", " ")}`).join(", ") || "nothing finished yet";
+  const rows = view.items.map((it, i) => {
+    const outcome = it.status === "done" ? it.outcome.replaceAll("_", " ") : it.status;
+    const cls = it.status === "done" ? (OUTCOME_CLASS[it.outcome] || "wrong") : "muted";
+    return `<tr><td class="num">${i + 1}</td><td title="${esc(titles[it.task_id] || "")}">${esc(it.task_id)}</td>`
+      + `<td class="${cls}"${it.reason ? ` title="${esc(it.reason)}"` : ""}>${esc(outcome)}${it.reason ? " ⓘ" : ""}</td><td class="num">${it.seconds != null ? `${it.seconds.toFixed(0)} s` : ""}</td>`
+      + `<td class="num">${it.cost_usd ? `$${it.cost_usd.toFixed(3)}` : ""}</td></tr>`;
+  }).join("");
+  $("#batch").innerHTML = `<p class="batch-tally"><strong>${view.finished} of ${view.total} finished</strong>: ${tally}`
+    + `${view.cost_usd ? `. Model cost $${view.cost_usd.toFixed(2)}` : ""}${view.stopped ? `. Stopped: ${esc(view.stopped)}` : ""}</p>`
+    + `<table class="batch-table"><thead><tr><th>#</th><th>Task</th><th>Outcome</th><th>Time</th><th>Cost</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
+function streamRun(runId) {
+  return new Promise((resolve) => {
+    const source = new EventSource(`${BACKEND}/api/runs/${runId}/stream`);
+    source.onmessage = (m) => director.push(JSON.parse(m.data));
+    source.addEventListener("end", () => { source.close(); resolve(); });
+    source.onerror = () => { source.close(); resolve(); };
+  });
+}
+
+function finishBatch() {
+  state.batch = null;
+  $("#batch-stop").hidden = true;
+  setRunning(false);
+  refreshSession();
+}
+
+async function runBatch() {
+  const req = request();
+  if (req.wording === "custom") { status("A batch uses the original or a reworded corpus text, not your own wording.", true); return; }
+  const taskIds = pickTasks(Number($("#batch-size").value));
+  setRunning(true);
+  status("Starting a batch…");
+  let batchId;
+  try {
+    ({ batch_id: batchId } = await withCode(() => api("/api/batches", {
+      method: "POST", body: JSON.stringify({ ...req, task_ids: taskIds }),
+    })));
+  } catch (e) {
+    setRunning(false);
+    status(`Batch not possible (${e.message}).`, true);
+    return;
+  }
+  status("");
+  const b = { id: batchId, view: null, lastIndex: 0, streamsDone: false };
+  state.batch = b;
+  $("#batch-stop").hidden = false;
+  director.reset(2);
+  director.inspector.show("batch");
+
+  // Poll the batch for the table; stream its runs one after another for the floor.
+  (async () => {
+    while (state.batch === b) {
+      try { b.view = await api(`/api/batches/${batchId}`); renderBatch(b.view); } catch { /* retry */ }
+      if (b.view && b.view.done) break;
+      await sleep(2000);
+    }
+  })();
+  for (let i = 0; i < taskIds.length; i++) {
+    while (!(b.view && (b.view.items[i].run_id || b.view.done))) await sleep(500);
+    const runId = b.view.items[i].run_id;
+    if (!runId) break;
+    b.lastIndex = i + 1;
+    await streamRun(runId);
+  }
+  b.streamsDone = true;
+  // If the floor has already played the last task, release the controls now.
+  while (director.playing || director.queue.length) await sleep(500);
+  if (state.batch === b) finishBatch();
+}
+
+$("#batch-run").addEventListener("click", runBatch);
+$("#batch-stop").addEventListener("click", async () => {
+  if (!state.batch) return;
+  $("#batch-stop").disabled = true;
+  try {
+    await withCode(() => api(`/api/batches/${state.batch.id}/stop`, { method: "POST" }));
+    status("The batch stops after the current task.");
+  } catch (e) { status(e.message, true); }
+  $("#batch-stop").disabled = false;
+});
 
 // ------------------------------------------------------------------ infra
 async function refreshInfra() {

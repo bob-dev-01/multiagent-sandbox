@@ -15,6 +15,7 @@ import os
 import threading
 import time
 import traceback
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,26 @@ class Budget:
         return max(0.0, self.daily_usd - self.spent_usd)
 
 
+@dataclass
+class Batch:
+    """Several tasks run one after another, each as an ordinary demo run."""
+
+    batch_id: str
+    items: list[dict[str, Any]]
+    done: bool = False
+    stopped: str | None = None
+    cancel: bool = False
+
+    def view(self) -> dict[str, Any]:
+        finished = [i for i in self.items if i["status"] == "done"]
+        tally: dict[str, int] = {}
+        for i in finished:
+            tally[i["outcome"]] = tally.get(i["outcome"], 0) + 1
+        return {"batch_id": self.batch_id, "done": self.done, "stopped": self.stopped,
+                "items": self.items, "finished": len(finished), "total": len(self.items),
+                "tally": tally, "cost_usd": round(sum(i.get("cost_usd") or 0 for i in finished), 4)}
+
+
 class DemoSession:
     def __init__(self, *, runner_factory: Any, daily_budget_usd: float = 3.0,
                  per_run_budget_usd: float = 0.6, use_judge: bool = True,
@@ -96,6 +117,7 @@ class DemoSession:
         self.per_run_budget_usd = per_run_budget_usd
         self.use_judge = use_judge
         self.runs: dict[str, DemoRun] = {}
+        self.batches: dict[str, Batch] = {}
         self._busy = threading.Lock()
         self._embedder: Any = embedder
         self._judge: Any = None
@@ -169,6 +191,57 @@ class DemoSession:
         threading.Thread(target=self._run, args=(run, req, task), daemon=True).start()
         return run
 
+    def start_batch(self, task_ids: list[str], template: RunRequest) -> Batch:
+        """Run the tasks in order, with the template's mode, wording and level."""
+        if not task_ids or len(task_ids) > 30:
+            raise RunRefused("a batch takes between 1 and 30 tasks")
+        unknown = [t for t in task_ids if t not in self.tasks]
+        if unknown:
+            raise RunRefused(f"unknown tasks {unknown}")
+        if template.mode not in MODES or template.level not in ("L2", "L3"):
+            raise RunRefused("unknown mode or level")
+        if self.budget.left_usd < 0.05:
+            raise RunRefused(f"today's demo budget of ${self.budget.daily_usd:.2f} is spent")
+        if not self._busy.acquire(blocking=False):
+            raise RunRefused("another run is in progress")
+        batch = Batch(batch_id=uuid.uuid4().hex[:10],
+                      items=[{"task_id": t, "status": "queued", "run_id": None} for t in task_ids])
+        self.batches[batch.batch_id] = batch
+        threading.Thread(target=self._run_batch, args=(batch, template), daemon=True).start()
+        return batch
+
+    def _run_batch(self, batch: Batch, template: RunRequest) -> None:
+        held = True  # start_batch took the lock for the first item
+        try:
+            for index, item in enumerate(batch.items):
+                if not held:
+                    self._busy.acquire()
+                held = False  # _run releases it when the item ends
+                if batch.cancel or self.budget.left_usd < 0.05:
+                    batch.stopped = "stopped by request" if batch.cancel else "daily budget spent"
+                    self._busy.release()
+                    for rest in batch.items[index:]:
+                        rest["status"] = "skipped"
+                    break
+                req = RunRequest(**{**template.__dict__, "task_id": item["task_id"]})
+                run = DemoRun()
+                self.runs[run.run_id] = run
+                item.update(status="running", run_id=run.run_id)
+                started = time.perf_counter()
+                self._run(run, req, self.tasks[item["task_id"]],
+                          batch={"batch_id": batch.batch_id, "index": index + 1,
+                                 "total": len(batch.items)})
+                finished = next((e["data"] for e in run.events if e["type"] == "run_finished"), {})
+                item.update(status="done", outcome=finished.get("outcome", "demo_error"),
+                            succeeded=bool(finished.get("succeeded")),
+                            reused=bool(finished.get("reused")),
+                            reason=finished.get("escalation_reason"),
+                            verdicts=[e["data"]["verdict"] for e in run.events if e["type"] == "verdict"],
+                            cost_usd=finished.get("cost_usd") or 0.0,
+                            seconds=round(time.perf_counter() - started, 1))
+        finally:
+            batch.done = True
+
     def _description(self, req: RunRequest, task: CorpusTask) -> str:
         if req.wording == "p0":
             return task.paraphrases[0]
@@ -178,7 +251,8 @@ class DemoSession:
             return req.custom_text.strip()[:2000]
         return task.description
 
-    def _run(self, run: DemoRun, req: RunRequest, task: CorpusTask) -> None:
+    def _run(self, run: DemoRun, req: RunRequest, task: CorpusTask,
+             batch: dict[str, Any] | None = None) -> None:
         team = None
         try:
             description = self._description(req, task)
@@ -186,7 +260,7 @@ class DemoSession:
                      description=description, wording=req.wording, mode=req.mode,
                      level=req.level, profile=req.profile, sandbox_always=req.sandbox_always,
                      tools=list(task.available_tools), expected_output=task.expected_output,
-                     registered=len(self.registry._agents))
+                     registered=len(self.registry._agents), batch=batch)
 
             live = None
             if req.mode in ("live", "wrong_i1"):
@@ -259,7 +333,7 @@ class DemoSession:
             run.finish()
             self._busy.release()
             # Keep memory bounded: the last 30 runs.
-            for old in list(self.runs)[:-30]:
+            for old in list(self.runs)[:-80]:
                 self.runs.pop(old, None)
 
 

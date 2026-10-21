@@ -108,3 +108,31 @@ def test_a_stored_unsafe_agent_is_shown_even_when_the_task_is_registered(session
     events = wait(session, RunRequest(task_id="T001", mode="unsafe_u1", level="L2"))
     assert first(events, "registry_lookup")["decision"] == "generate"
     assert first(events, "verdict")["verdict"] == "FAIL_UNSAFE"
+
+
+def test_a_batch_runs_its_tasks_in_order(session) -> None:
+    batch = session.start_batch(["T001", "T011", "T001"],
+                                RunRequest(task_id="T001", mode="safe_a1", level="L2"))
+    deadline = time.time() + 180
+    while not batch.done and time.time() < deadline:
+        time.sleep(0.2)
+    view = batch.view()
+    assert view["done"] and view["finished"] == 3
+    assert [i["task_id"] for i in view["items"]] == ["T001", "T011", "T001"]
+    # The third repeats the first task, so the registered agent is reused.
+    assert view["items"][2]["outcome"] == "reused"
+    started = [e["data"]["batch"] for e in session.runs[view["items"][1]["run_id"]].events
+               if e["type"] == "run_started"][0]
+    assert started["index"] == 2 and started["total"] == 3
+    assert not session._busy.locked()
+
+
+def test_a_batch_can_be_stopped(session) -> None:
+    batch = session.start_batch(["T001", "T011", "T021"],
+                                RunRequest(task_id="T001", mode="safe_a1", level="L2"))
+    batch.cancel = True
+    deadline = time.time() + 120
+    while not batch.done and time.time() < deadline:
+        time.sleep(0.2)
+    assert batch.stopped and any(i["status"] == "skipped" for i in batch.items)
+    assert not session._busy.locked()

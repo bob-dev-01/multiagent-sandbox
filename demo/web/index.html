@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/app.css?v=2">
   <script src="config.js"></script>
 </head>
 <body>
@@ -88,6 +88,16 @@
           <button class="primary" id="run">Run live</button>
           <button id="reset" title="Empty the registry so the next task is generated afresh">Empty registry</button>
         </div>
+        <h2 class="replay-h">Or run several tasks in a row</h2>
+        <div class="replay">
+          <select id="batch-size" aria-label="How many tasks">
+            <option value="5">5 tasks</option><option value="10" selected>10 tasks</option>
+            <option value="20">20 tasks</option><option value="30">All 30 tasks</option>
+          </select>
+          <button id="batch-run">Run batch</button>
+          <button id="batch-stop" hidden>Stop after this task</button>
+        </div>
+        <p class="hint">Tasks are picked at random and run one after another with the settings above. A live batch costs a few cents per task.</p>
         <h2 class="replay-h">Or replay a recorded run</h2>
         <div class="replay">
           <select id="replay"></select>
@@ -110,11 +120,13 @@
           <button role="tab" aria-selected="false" data-pane="contract">Contract</button>
           <button role="tab" aria-selected="false" data-pane="verdict">Verdict</button>
           <button role="tab" aria-selected="false" data-pane="output">Output</button>
+          <button role="tab" aria-selected="false" data-pane="batch">Batch</button>
         </div>
         <div class="pane" data-pane="code"><pre id="code" class="code"><span class="empty">The agent's source appears here once it is written.</span></pre></div>
         <div class="pane" data-pane="contract" hidden><div id="contract"></div></div>
         <div class="pane" data-pane="verdict" hidden><div id="verdict"></div></div>
         <div class="pane" data-pane="output" hidden><div id="output"></div></div>
+        <div class="pane" data-pane="batch" hidden><div id="batch"><p class="empty">Run several tasks in a row to see them listed here.</p></div></div>
       </section>
     </section>
 
@@ -133,6 +145,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="js/main.js"></script>
+  <script type="module" src="js/main.js?v=2"></script>
 </body>
 </html>

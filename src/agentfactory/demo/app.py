@@ -101,6 +101,60 @@ class RunBody(BaseModel):
     sandbox_always: bool = False
 
 
+class BatchBody(BaseModel):
+    task_ids: list[str]
+    mode: str = "live"
+    wording: str = "original"
+    level: str = "L3"
+    profile: str = "strict"
+    sandbox_always: bool = False
+
+
+@app.post("/api/batches")
+def start_batch(body: BatchBody, x_demo_code: str | None = Header(default=None)) -> dict[str, Any]:
+    _authorise(x_demo_code)
+    template = RunRequest(task_id=body.task_ids[0] if body.task_ids else "", mode=body.mode,
+                          wording=body.wording, level=body.level, profile=body.profile,
+                          sandbox_always=body.sandbox_always)
+    try:
+        batch = session.start_batch(body.task_ids, template)
+    except RunRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _touch()
+    return {"batch_id": batch.batch_id}
+
+
+@app.get("/api/batches/{batch_id}")
+def batch_status(batch_id: str) -> dict[str, Any]:
+    batch = session.batches.get(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404)
+    _touch_quiet()
+    return batch.view()
+
+
+@app.post("/api/batches/{batch_id}/stop")
+def stop_batch(batch_id: str, x_demo_code: str | None = Header(default=None)) -> dict[str, Any]:
+    _authorise(x_demo_code)
+    batch = session.batches.get(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404)
+    batch.cancel = True
+    return {"ok": True}
+
+
+_last_touch = [0.0]
+
+
+def _touch_quiet() -> None:
+    """Keep the auto-stop away while a batch runs, at most once a minute."""
+    import time
+
+    if time.time() - _last_touch[0] > 60:
+        _last_touch[0] = time.time()
+        _touch()
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {"ok": True}

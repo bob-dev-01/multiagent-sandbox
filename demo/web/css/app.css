@@ -141,6 +141,15 @@ input[type="range"] { accent-color: var(--ink); }
 button.primary { background: var(--active); border-color: var(--active); color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
 .replay-h { margin-top: 1.2rem; }
+#log li.sep { border-top: 1px solid var(--line); margin-top: .4rem; padding-top: .4rem; color: var(--ink-3); }
+.batch-tally { font-size: .84rem; margin: 0 0 .5rem; }
+.batch-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.batch-table th, .batch-table td { text-align: left; padding: .25rem .4rem; border-bottom: 1px solid var(--line); }
+.batch-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.batch-table .pass { color: var(--pass); }
+.batch-table .unsafe { color: var(--unsafe); }
+.batch-table .wrong { color: var(--wrong); }
+.batch-table .muted { color: var(--ink-3); }
 .replay { display: flex; gap: .4rem; }
 .replay select:first-child { flex: 1; min-width: 0; }
 .status { min-height: 1.3em; font-size: .84rem; color: var(--ink-2); margin: .7rem 0 0; }
