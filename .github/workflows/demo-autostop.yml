@@ -1,0 +1,35 @@
+name: demo auto-stop
+
+# Stops the AKS cluster when the demo started it and nothing has happened for
+# 40 minutes (agentfactory.demo.autostop). Container Apps express has no jobs,
+# so the schedule lives here. It logs in to Azure as the demo's user-assigned
+# identity through OIDC: no secret is stored anywhere. The IDs below identify
+# the identity, the tenant and the subscription; they are not credentials.
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  autostop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: 64a1c7a3-19bf-4065-b177-3903937aecc8
+          tenant-id: 571d38cd-0e29-41ab-b7d5-74635316f8b7
+          subscription-id: 1c063792-23ea-4e59-ac80-7fed220d9711
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install "azure-identity>=1.19" "httpx>=0.27"
+      - run: python -m agentfactory.demo.autostop
+        env:
+          PYTHONPATH: src
+          DEMO_IDLE_MINUTES: "40"
