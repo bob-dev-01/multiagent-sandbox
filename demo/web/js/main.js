@@ -1,5 +1,5 @@
-import { Floor, ROOMS } from "./floor.js?v=7";
-import { Fleet, Inspector, ROOM_TEXT, esc } from "./director.js?v=7";
+import { Floor, ROOMS } from "./floor.js?v=8";
+import { Fleet, Inspector, ROOM_TEXT, esc } from "./director.js?v=8";
 
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -491,7 +491,7 @@ document.querySelectorAll(".tabs button").forEach((tab) => tab.addEventListener(
   $("#view-results").hidden = !results;
   if (results && !state.resultsLoaded) {
     state.resultsLoaded = true;
-    const { renderResults } = await import("./results.js?v=7");
+    const { renderResults } = await import("./results.js?v=8");
     renderResults($("#results"));
   }
 }));
@@ -502,8 +502,13 @@ fleet.reset(1);
 await Promise.all([loadTasks(), loadReplays()]);
 refreshInfra();
 const session = await refreshSession();
+// ?play=<recording id> opens the page already playing that recording.
+const autoplay = new URLSearchParams(location.search).get("play");
 if (session && session.active) {
   status("A run is already in progress; you are watching it.");
   joinActive();
+} else if (autoplay && state.replays.some((r) => r.id === autoplay)) {
+  $("#replay").value = autoplay;
+  playReplay(autoplay, 2);
 }
 setInterval(() => { if (!document.hidden) refreshInfra(); }, 20000);

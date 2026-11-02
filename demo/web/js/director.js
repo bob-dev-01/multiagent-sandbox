@@ -5,7 +5,7 @@
 // track, so a burst (static analysis takes milliseconds) still reads at human
 // speed and a slow step (the sandbox takes seconds) holds the agent in its room.
 
-import { ROOMS } from "./floor.js?v=7";
+import { ROOMS } from "./floor.js?v=8";
 
 const VERDICT_STATE = { PASS: "pass", FAIL_UNSAFE: "unsafe", FAIL_BOTH: "unsafe", FAIL_INCORRECT: "wrong" };
 const PROFILE_NAMES = ["permissive", "balanced", "strict", "paranoid"];
