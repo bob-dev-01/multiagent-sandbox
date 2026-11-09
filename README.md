@@ -1058,3 +1058,8 @@ Honest list, so nobody discovers these the hard way:
 
 See section 16 of `architecture.md` for the fifteen open questions this implementation is built
 against. OQ-2 — whether gVisor on AKS is deployable at all — is now answered: it is.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The thesis and report documents under `docs/` are not part of
+the repository.
