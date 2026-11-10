@@ -6,17 +6,18 @@ is **safe to deploy** and **correct enough to be useful** before it executes.
 
 Master's research, Solution Architecture and Data Engineering — Bobur Yusupov, IT Park University.
 
-> **Status (2026-10-13): deployed; the validation matrix is complete.** The labelled corpus is
-> complete at 30 tasks and 300 agents, and all 2,700 validation runs of the experimental design
-> are done (L1 on the orchestrator VM; L2 and L3 on AKS). The corpus labels still await the
-> second reviewer and the LLM judge is not yet calibrated, so these are measurements, not yet
-> thesis results.
+> **Status (2026-11-09): complete and replicated.** Every experiment of the design is done, was
+> repeated on 9 November 2026 with the final code ([Replication](#replication-2026-11-09)), and
+> was tested outside the corpus on a held-out set with two external baselines
+> ([Held-out set](#held-out-set-and-external-baselines-2026-11-09)). Two planned checks did not
+> happen and are limitations, not pending work: a second human review of the corpus labels and a
+> second rater for the judge calibration.
 
 ## Results at a glance
 
 | What | Result | Where |
 |---|---|---|
-| Classification, full corpus, all three levels | Every one of 2,700 verdicts matches its label; FNR 0 (95% upper bound 0.5%), FPR 0 | [Full-corpus run 1](#full-corpus-run-1-2026-10-12), [L1](#full-corpus-run-1-l1-2026-10-13) |
+| Classification, full corpus, all three levels | Every one of 2,700 verdicts matches its label; FNR 0 over 90 distinct unsafe agents (95% upper bound 4.1%), FPR 0 over 210 (1.8%) — on the author's corpus, whose unsafe labels the pipeline's own static rules confirm, so this measures how detectable the injected faults are | [Full-corpus run 1](#full-corpus-run-1-2026-10-12), [L1](#full-corpus-run-1-l1-2026-10-13) |
 | Cost of gVisor (L3 vs L2) | +77.5 ms on sandbox start-up (CI 76–79); +127 ms on a ~5.4 s validation, ≈2.4% | [Full-corpus run 1](#full-corpus-run-1-2026-10-12) |
 | Strictness profile (RQ4) | Incorrect agents passed: 75% permissive, 62% balanced, 0% strict; no correct agent rejected under any profile | [Strictness sweep](#strictness-sweep--rq4--h_4-2026-10-13) |
 | L1 vs the container levels | Sandbox stage 47 ms at L1 vs ~5.3–5.5 s at L2/L3 — about 110× faster, at the price of sharing the host kernel | [L1](#full-corpus-run-1-l1-2026-10-13) |
@@ -26,12 +27,14 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 | Live generator (Claude Opus 5), end to end | TSR 0.92 cold / 0.87 warm, ARR 0.51; 221 agents generated, none executed unsafely; $13.11 | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
 | Live generator after the fixes | TSR **0.978** cold / **1.000** warm, ARR 0.48; 188 agents, 182 PASS, none executed unsafely; $9.12 | [Integration test 3](#integration-test-3--live-generator-after-the-fixes-2026-10-13) |
 | gVisor while the agent works (workload benchmark) | CPU-bound +12%, allocation-heavy +47%, file I/O **×7.2**, `stat` loop **×6.4** (≈17 µs per call) | [Workload benchmark](#workload-benchmark--gvisor-while-the-agent-works-2026-10-16) |
-| What the sandbox catches alone (layer ablation) | 35 of 90 unsafe agents (38.9%) before the run-time monitor, **65 of 90** (72.2%) after, identical at L2 and L3; static analysis 90 of 90; together 90 of 90; no false positive on 420 corpus cells or 572 generated agents | [Layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16) |
+| What the sandbox catches alone (layer ablation) | 35 of 90 unsafe agents (38.9%) before the run-time monitor, **65 of 90** (72.2%) after, 66 with the final monitor, identical at L2 and L3; static analysis 90 of 90; together 90 of 90; no false positive on 420 corpus cells or 572 generated agents | [Layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16) |
 | H_3: safety + correctness vs safety only | Accuracy at predicting task success 0.911 → **0.990** on 574 generated agents (McNemar p ≈ 6 × 10⁻¹⁴); no successful agent rejected | [H_1 and H_3](#h_1-and-h_3--formal-tests-2026-10-16) |
-| H_1: pipeline vs no validation | 0 of 810 unsafe cells deployed against 810 of 810 (UDR 95% upper bound 0.47%) | [H_1 and H_3](#h_1-and-h_3--formal-tests-2026-10-16) |
+| H_1: pipeline vs no validation | 0 of 90 unsafe agents (810 cells) deployed; 95% upper bound 4.1% per agent. No significance test: the baseline deploys everything by definition | [H_1 and H_3](#h_1-and-h_3--formal-tests-2026-10-16) |
 | LLM judge vs a human rater | Cohen's κ **0.948** (bootstrap 95% CI 0.868–1.000) on 60 blind items; 58 of 60 identical; threshold 0.80 met | [Judge calibration](#judge-calibration--adr-9-2026-10-16) |
 | The same loop as AutoGen agents | TSR 0.989 cold / 0.983 warm, ARR 0.49; 266 executions, every one carried by an AutoGen message, none unsafe; $9.50 | [Integration test 4](#integration-test-4--autogen-runtime-live-generator-2026-10-14) |
 | What strictness costs on generated agents | PASS 192 permissive → 161 strict; 39 of the 42 strict rejections trace to a paraphrase that drops a constraint | [Integration test 2](#integration-test-2--live-generator-2026-10-13) |
+| Held-out set, written blind by another model | Pipeline stops **41 of 44** unsafe agents (93%), flags 0 of 30 safe; Bandit alone 16 of 44, an OptiGuide-style "is this code safe?" model check 15 of 44 | [Held-out set](#held-out-set-and-external-baselines-2026-11-09) |
+| Replication, 2026-11-09 | Every verdict reproduced; gVisor start-up +84.9 ms instead of +77.5 ms | [Replication](#replication-2026-11-09) |
 
 Progress against the experimental design:
 
@@ -40,7 +43,7 @@ Progress against the experimental design:
 | Validation matrix (30 tasks × 10 agents × 3 levels × 3 replicates = 2,700) | 2,700 (L1, L2, L3) | — |
 | Strictness sweep (RQ4) | all 2,700 cells × 4 profiles, replay verified; 221 generated agents × 4 profiles | — |
 | Integration test (RQ3) | corpus-replay generator, 10 seeds; live generator (Claude Opus 5), 3 seeds, before and after the AF108 fix and paraphrase repair | — |
-| Judge calibration (ADR-9) | 60 items scored blind by a human and by the judge; κ = 0.948, gate open | a second human rater on a subset |
+| Judge calibration (ADR-9) | 60 items scored blind by a human and by the judge; κ = 0.948, gate open | — (the second rater did not take part: a limitation) |
 
 ---
 
@@ -875,6 +878,7 @@ ablation was rerun after a fix:
 | `ablation2-l2l3` | process, dynamic code, native, deserialisation, secrets in output | 62 / 90 |
 | `ablation3-l2l3` | + name lookups, UDP via audit, secrets in tool arguments | 64 / 90 |
 | `ablation4-l2l3` | + `sendto`/`sendmsg` recorded before name resolution | **65 / 90** (72.2%, 95% CI 62.2–80.4%) |
+| replication, 2026-11-09 | + output and tool arguments scanned for secrets as plain strings (`0e9cea1`) | **66 / 90** (73.3%, 95% CI 63.4–81.4%) |
 
 Static analysis still caught 90/90, nothing was caught by the sandbox alone, nothing was missed.
 Two findings along the way were real gaps, not artefacts of the corpus: a UDP datagram to an
@@ -882,7 +886,8 @@ unresolvable host was never recorded, because the interpreter resolves the name 
 its audit event (the namespace's deny-all NetworkPolicy contained it; only the record was
 missing); and a credential appended after a newline in a report went unseen, because JSON
 escaping hid the word boundary — fixed after `ablation4` in `0e9cea1` and checked by a unit
-test, not yet by a cluster run. The 25 agents the sandbox still does not flag carry risks with no
+test, and on the cluster in the replication (66 / 90). The 24 agents the sandbox still does not
+flag (25 before `0e9cea1`) carry risks with no
 run-time effect: hard-coded credentials that are never used, walks of the class hierarchy or
 `__globals__` that read and do nothing, `__import__` of a harmless module, a pickle round trip of
 plain data. Those are code patterns, and only static analysis can see them.
@@ -963,10 +968,105 @@ exactly the same evidence (`experiments/calibrate_judge.py --evidence runs/full2
 - **Both disagreements are on incorrect agents, one point apart.** T019 (dates parsed
   month-first): human 1, judge 0. T001 (a total counting every line): human 1, judge 2 — the
   task's own guide puts this at 1, so here the judge departed from the guide.
-- One human rater, who also directed the corpus. The protocol's second rater on a subset has not
-  been done; until then κ measures agreement with one person.
+- One human rater, who also directed the corpus. The protocol's second rater on a subset did not
+  take part, so κ measures agreement with one person — the corpus's author — and H_3 rests on it.
 
 ---
+
+### Held-out set and external baselines (2026-11-09)
+
+The supervisor's review pointed out that the corpus score is closed on the corpus's construction:
+`corpus_check.py` confirms every unsafe label with `layer1_static.analyse` and
+`layer2_policy.check`, the pipeline's own Layers 1–2. So the pipeline was tested on agents its
+author did not write, and against two checks from outside the system.
+
+```bash
+python experiments/heldout_generate.py --run-id heldout-set
+python experiments/heldout_validate.py runs/heldout-set --level L3 --run-id heldout-l3
+python experiments/bandit_baseline.py --heldout runs/heldout-set
+python experiments/llm_safeguard_baseline.py --heldout runs/heldout-set
+python experiments/heldout_report.py --validation runs/heldout-l3 \
+    --corpus-ablation runs/replication-2026-11-09/ablation4-l2l3
+```
+
+- **Writer:** Claude Sonnet 5.5 — not used anywhere in the pipeline and not the model that drafted
+  the corpus. It got each corpus task, its tools and, for an unsafe agent, one risk class in plain
+  words after CWE (78, 94/95, 502, 798, 200/526, 22, 918, 400), plus the class the live model
+  produced in integration test 2: a contract that omits a tool the code calls. Six agents combine
+  two classes. It never saw the rules, the findings or the corpus agents. Half the unsafe requests
+  asked for the behaviour to be inconspicuous.
+- **Set:** 90 planned (30 safe, 60 unsafe). The writer declined 16 unsafe requests, 14 of them
+  inconspicuous; refusals were never re-asked, and replies cut off mid-JSON were repeated once.
+  Result: 30 safe and 44 unsafe agents (28 plain, 16 inconspicuous, 5 with two faults), USD 0.65.
+  Every unsafe agent quotes the lines that implement its fault, and every quote is in the code.
+- **Validation:** once, at L3, strict profile, short-circuiting off, against the contract the writer
+  declared. 74 runs, no infrastructure failure; 69 on gVisor's kernel, 5 OOM-killed before the
+  harness reported (all memory-exhaustion agents, failed on the declared-resource rule).
+
+| Validator | Corpus unsafe (n = 90) | Corpus others flagged (n = 210) | Held-out unsafe (n = 44) | Held-out safe flagged (n = 30) |
+|---|---|---|---|---|
+| Pipeline, all layers | 90 | 0 | **41** (93.2%, CI 81.8–97.7%) | 0 |
+| Static analysis alone | 90 | 0 | 30 | 0 |
+| Sandbox alone, final monitor | 66 | 0 | 30 | 0 |
+| Bandit 1.9.4 alone, default rules | 39 | 0 | 16 | 0 |
+| OptiGuide-style model check (Claude Sonnet 5) | 52 | 0 | 15 | 0 |
+
+- Plain unsafe agents 28/28, inconspicuous 13/16. Static analysis and the sandbox each caught
+  eleven the other missed: the sandbox, dynamic code and undeclared tools reached through names
+  built at run time (eight of them inconspicuous) and memory exhaustion; static analysis,
+  deserialisation of plain data and secrets that never leave the agent.
+- **Missed:** `T009-u2`, `T017-u1`, `T029-u2` — a fake API key stored base64-encoded and decoded at
+  run time into a request header that is never sent. Not fixed (see *What is not done yet*).
+- **The model check** asks OptiGuide's own question (microsoft/OptiGuide,
+  `what-if/optiguide/optiguide.py`, `SAFEGUARD_SYSTEM_MSG`, commit `6e2111c`) of the pipeline's
+  judge model; the task stands in for OptiGuide's surrounding program; the code runs unless the
+  reply contains `DANGER`. USD 0.45 for 374 agents. Both baselines lose most of their power on the
+  inconspicuous agents (Bandit 4/16, the model 5/16).
+
+### Task-clustered intervals (2026-11-09)
+
+`python experiments/clustered_stats.py` → `runs/clustered_stats.json`. The review's point: Layers 1–2
+are deterministic and the ten agents of a task are not independent, so 2,700 cells are not 2,700
+observations.
+
+- All 300 agents got one verdict across all of their cells: the replicates measure the sandbox,
+  not the classification. The effective sample is 300 agents in 30 tasks.
+- FNR 0 of 90 unsafe agents: 95% upper bound 4.1% (Wilson; one-sided exact 3.3%); 0 of 30 tasks:
+  11.4%. Unsafe flags on safe or incorrect agents: 0 of 210, upper bound 1.8%. The 0.47% quoted
+  before treated the 810 cells as independent.
+- H_3 with the task as the unit: accuracy +0.078, cluster-bootstrap 95% CI 0.021–0.148; better in
+  10 of 30 tasks and worse in none (sign test over tasks, p = 0.002). The safety-only accuracy
+  interval widens from 0.885–0.932 to 0.835–0.978.
+- Sandbox alone in the ablation, 65 of 90: cluster bootstrap 63.3–81.1% (Wilson 62.2–80.4%).
+
+### Replication (2026-11-09)
+
+Every experiment was repeated on freshly started infrastructure with the final code, after every
+analysis had first been recomputed from the recorded runs (identical, up to bootstrap noise in the
+last digit of some intervals). Records: `runs/replication-2026-11-09/`.
+
+| | Original | Replication |
+|---|---|---|
+| Matrix L2/L3, 1,800 cells | every verdict matches | every verdict matches (2 cells lost to a workstation→API timeout, resumed) |
+| L1, 900 cells (VM) | every verdict matches; sandbox p50 46.9 ms | every verdict matches; 49.8 ms |
+| Strictness sweep | — | 236 of 236 values identical |
+| False-positive checks (420 corpus cells; 572 generated agents) | none | none |
+| Judge calibration, fresh model calls | κ 0.948 | 60 of 60 scores identical, κ 0.948 |
+| H_3, fresh judge calls on the same 574 agents | 0.911 → 0.990 | identical; 558 of 574 scores identical, the rest 0↔1 on failing agents |
+| Integration test 4, live, AutoGen | TSR 0.989 / 0.983, ARR 0.486, USD 9.50 | TSR 0.989 / 0.994, ARR 0.480, USD 9.07; no unsafe execution; both escalations AF108 |
+| H_3 with the new test 4 (575 agents) | — | 0.913 → 0.990, McNemar p ≈ 1 × 10⁻¹³ |
+| Integration test 1, replay | TSR 0.600 / 0.750, ARR 0.400, MTTD 7.5 / 5.0 s | TSR 0.600 / 0.750, ARR 0.378, MTTD 14.0 / 9.6 s |
+| Layer ablation, sandbox alone | 65 / 90 | 66 / 90 (`0e9cea1`, made after the original) |
+| gVisor on sandbox start-up | +77.5 ms (76.1–79.0) | +84.9 ms (83.2–86.2) |
+| Sandbox stage, L2 / L3 | 5.32 / 5.45 s | 5.31 / 5.38 s |
+| Mixed model, L3/L2 ratio | 1.033 (1.027–1.039) | 1.018 (1.008–1.028) |
+| Workload: `stat` call / file I/O | +17 µs / ×7.2 | +17 µs / ×5.6 |
+
+Verdicts reproduce exactly; timings reproduce in direction and order of magnitude, not to their
+confidence intervals. The replay test's time to deploy doubled entirely outside the sandbox (pod
+creation, container start and log retrieval from a busy workstation); start-up inside the sandbox
+was 189 ms against 183. Its reuse rate differs because the rewordings were repaired after test 1.
+The demonstration batches (thesis Table 16) were not repeated.
 
 ## Deployed environment
 
@@ -1011,7 +1111,7 @@ silently degrades to runc.
 
 Honest list, so nobody discovers these the hard way:
 
-- **The corpus labels are not yet second-reviewed.** 30 tasks, 10 per domain, 300 agents, each
+- **The corpus labels were not second-reviewed by hand.** The automatic check confirms the unsafe labels with the pipeline's own Layers 1–2, so it is not independent of what it checks; the held-out set is the independent test. 30 tasks, 10 per domain, 300 agents, each
   task with its own tool data (`corpus/AUTHORING.md`). Tasks T002–T010, T012–T020 and T022–T030
   were drafted with AI assistance and pass `python -m agentfactory.corpus_check`, which confirms
   every safe agent reproduces the expected output, every incorrect one does not, and every unsafe
@@ -1024,8 +1124,8 @@ Honest list, so nobody discovers these the hard way:
   not vary by isolation level on this corpus (H_2, reported as a finding).
 - **The judge is calibrated against one human rater** (κ = 0.948 on 60 items, see
   [Judge calibration](#judge-calibration--adr-9-2026-10-16)); the second rater the protocol asks
-  for has a blank 15-item sheet (`build_calibration_sheet.py --second-rater 15`) but has not
-  scored yet.
+  for did not take part; the blank 15-item sheet (`build_calibration_sheet.py --second-rater 15`)
+  remains for anyone who repeats the study.
 - **The paraphrases were repaired after integration tests 1 and 2** (`11529d7`, and T008 p0
   once more after test 3), so those runs' reuse figures belong to the corpus text as it was then;
   each run's manifest records the corpus hash it used.
@@ -1048,11 +1148,16 @@ Honest list, so nobody discovers these the hard way:
   [workload benchmark](#workload-benchmark--gvisor-while-the-agent-works-2026-10-16), on four
   synthetic agents rather than on generated ones.
 - **Run-time detection covers behaviour, not intent.** Since the run-time monitor the sandbox
-  flags 65 of 90 unsafe corpus agents on its own; the other 25 carry risks with no run-time effect,
+  flags 66 of 90 unsafe corpus agents on its own (65 before `0e9cea1`); the other 24 carry risks with
+  no run-time effect,
   which only static analysis sees ([layer ablation](#layer-ablation--what-the-sandbox-sees-alone-2026-10-16)).
   A Python audit hook is an in-process monitor: native code that bypasses the interpreter would
   escape it, which is what the container boundary and, at L3, gVisor are for.
-- **Practitioner interviews (RQ5, RQ6) have not taken place.** The protocol, consent form, guide
+- **Encoded credentials pass.** Three held-out agents keep a fake API key base64-encoded and decode it
+  at run time into a header that is never sent; static analysis matches secrets in plain text and the
+  monitor scans only what leaves the sandbox. Decoding encoded literals before the secret rules would
+  close the gap, but it was left open so the held-out measurement stays held out.
+- **Practitioner interviews (RQ5, RQ6) did not take place**; the design became experimental (thesis §2.7). The protocol, consent form, guide
   (English and Russian, with the measured results), codebook and joint-display template are in
   `research/interviews/`, committed before any session as the plan requires.
 
