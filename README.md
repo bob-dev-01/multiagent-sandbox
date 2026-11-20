@@ -9,9 +9,10 @@ Master's research, Solution Architecture and Data Engineering — Bobur Yusupov,
 > **Status (2026-11-09): complete and replicated.** Every experiment of the design is done, was
 > repeated on 9 November 2026 with the final code ([Replication](#replication-2026-11-09)), and
 > was tested outside the corpus on a held-out set with two external baselines
-> ([Held-out set](#held-out-set-and-external-baselines-2026-11-09)). Two planned checks did not
-> happen and are limitations, not pending work: a second human review of the corpus labels and a
-> second rater for the judge calibration.
+> ([Held-out set](#held-out-set-and-external-baselines-2026-11-09)). A second human rater scored
+> 15 of the 60 judge-calibration items on 2026-11-20 ([Judge calibration](#judge-calibration--adr-9-2026-10-16)).
+> One planned check did not happen and is a limitation, not pending work: a second human review of
+> the corpus labels.
 
 ## Results at a glance
 
@@ -43,7 +44,7 @@ Progress against the experimental design:
 | Validation matrix (30 tasks × 10 agents × 3 levels × 3 replicates = 2,700) | 2,700 (L1, L2, L3) | — |
 | Strictness sweep (RQ4) | all 2,700 cells × 4 profiles, replay verified; 221 generated agents × 4 profiles | — |
 | Integration test (RQ3) | corpus-replay generator, 10 seeds; live generator (Claude Opus 5), 3 seeds, before and after the AF108 fix and paraphrase repair | — |
-| Judge calibration (ADR-9) | 60 items scored blind by a human and by the judge; κ = 0.948, gate open | — (the second rater did not take part: a limitation) |
+| Judge calibration (ADR-9) | 60 items scored blind by a human and by the judge; κ = 0.948, gate open; second rater on 15 items, 15/15 identical | — |
 
 ---
 
@@ -143,7 +144,7 @@ src/agentfactory/
 corpus/tasks/                    labelled agent corpus, one file per task
 experiments/run_matrix.py        validation matrix with resume
 experiments/run_integration.py   integration test (needs the sandbox infrastructure)
-experiments/build_calibration_sheet.py, calibrate_judge.py   judge calibration (ADR-9)
+experiments/build_calibration_sheet.py, calibrate_judge.py, inter_rater.py   judge calibration (ADR-9)
 corpus/AUTHORING.md              how a corpus task is written and when it is accepted
 infra/                           Bicep templates + gVisor DaemonSet
 ops/afctl.py                     resource control panel
@@ -968,8 +969,15 @@ exactly the same evidence (`experiments/calibrate_judge.py --evidence runs/full2
 - **Both disagreements are on incorrect agents, one point apart.** T019 (dates parsed
   month-first): human 1, judge 0. T001 (a total counting every line): human 1, judge 2 — the
   task's own guide puts this at 1, so here the judge departed from the guide.
-- One human rater, who also directed the corpus. The protocol's second rater on a subset did not
-  take part, so κ measures agreement with one person — the corpus's author — and H_3 rests on it.
+- **Second rater (2026-11-20).** An independent software engineer, who had no part in the corpus
+  and used no AI assistance, scored a blind 15-item subset (`build_calibration_sheet.py
+  --second-rater 15`: seeded, 8 incorrect_only and 7 safe_correct) on the same sheet, without the
+  key. All 15 scores match the first rater's and the judge's: κ = 1.0, exact agreement 15/15
+  (Clopper–Pearson 95% CI 0.78–1.00; `experiments/inter_rater.py`). Two limits: 15 items is
+  small, and the seeded subset happens to contain neither of the two items on which the first
+  rater and the judge disagreed, and no item scored 0 — so it confirms the first rater on clear
+  cases rather than on the hard ones. The 60-item κ of 0.948 is still agreement with the corpus's
+  author alone.
 
 ---
 
@@ -1122,10 +1130,10 @@ Honest list, so nobody discovers these the hard way:
   the first layer ablation 55 of 60 unsafe_only agents returned exactly the expected output; the
   other 5 were refused by the sandbox before they returned and need reading. Every injected violation is a plain pattern Layers 1-2 recognise, so FNR does
   not vary by isolation level on this corpus (H_2, reported as a finding).
-- **The judge is calibrated against one human rater** (κ = 0.948 on 60 items, see
-  [Judge calibration](#judge-calibration--adr-9-2026-10-16)); the second rater the protocol asks
-  for did not take part; the blank 15-item sheet (`build_calibration_sheet.py --second-rater 15`)
-  remains for anyone who repeats the study.
+- **The judge is calibrated mainly against one human rater** (κ = 0.948 on 60 items, see
+  [Judge calibration](#judge-calibration--adr-9-2026-10-16)). A second rater scored only 15 of
+  them (15/15 identical, CI for agreement 0.78–1.00), and that subset does not include the two
+  contested items, so the second rating supports the first on clear cases only.
 - **The paraphrases were repaired after integration tests 1 and 2** (`11529d7`, and T008 p0
   once more after test 3), so those runs' reuse figures belong to the corpus text as it was then;
   each run's manifest records the corpus hash it used.
