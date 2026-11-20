@@ -1165,9 +1165,15 @@ Honest list, so nobody discovers these the hard way:
   at run time into a header that is never sent; static analysis matches secrets in plain text and the
   monitor scans only what leaves the sandbox. Decoding encoded literals before the secret rules would
   close the gap, but it was left open so the held-out measurement stays held out.
-- **Practitioner interviews (RQ5, RQ6) did not take place**; the design became experimental (thesis §2.7). The protocol, consent form, guide
-  (English and Russian, with the measured results), codebook and joint-display template are in
-  `research/interviews/`, committed before any session as the plan requires.
+- **One practitioner interview, not the planned four to five** (thesis §2.7, §3.11). On 2026-11-20 a
+  senior backend engineer with ten years of experience — the same person as the second rater —
+  answered a short written questionnaire, with consent to anonymous use, after reading this README;
+  the prepared guide in `research/interviews/` (protocol, consent, guide, codebook, joint display)
+  was not used, so the design stays experimental. Their main point is a limit of the design:
+  validation happens once, before deployment, and cannot see a prompt injection that reaches an
+  agent through its input data at run time; run-time controls in production (default-deny
+  networking, quotas, a kill switch, human confirmation of irreversible actions) were not studied.
+  They also named false blocks, and who examines them, as the main obstacle to adoption.
 
 See section 16 of `architecture.md` for the fifteen open questions this implementation is built
 against. OQ-2 — whether gVisor on AKS is deployable at all — is now answered: it is.
